@@ -221,13 +221,10 @@ def generate_questions(
         st.session_state["last_quiz_raw"] = content
         raise ValueError("Quiz response was not a list. Please retry generation.")
 
-    # Enforce expected count; warn but continue if short
+    # Enforce expected count strictly
     if len(questions) < 20:
         st.session_state["last_quiz_raw"] = content
-        st.session_state["last_quiz_error"] = (
-            f"Warning: expected 20 questions but got {len(questions)}. "
-            "Showing what we received."
-        )
+        raise ValueError(f"Expected 20 questions, but got {len(questions)}. Please retry.")
     if len(questions) > 20:
         st.session_state["last_quiz_raw"] = content
         st.session_state["last_quiz_error"] = (
@@ -708,7 +705,9 @@ def main() -> None:
 
             submitted = st.form_submit_button("Submit Answers", disabled=disable_inputs)
 
-        if submitted:
+        if submitted and disable_inputs:
+            st.info("Quiz locked. Start a new test to answer again.")
+        elif submitted:
             if not student_name:
                 st.error("Student name is required to grade and save results.")
                 return
