@@ -57,6 +57,17 @@ KEYWORDS = [
     "table",
 ]
 
+# Map units to skills for revision/progress displays
+UNIT_SKILL_MAP = {
+    1: ["integers", "expressions"],
+    2: ["equations", "inequalities"],
+    3: ["ratios", "percents"],
+    4: ["proportions", "unit rates"],
+    5: ["geometry", "area", "perimeter"],
+    6: ["volume", "surface area"],
+    7: ["statistics", "data displays"],
+}
+
 
 def load_units_data() -> Dict[str, Dict[str, int]]:
     if not UNITS_DATA_PATH.exists():
@@ -165,6 +176,19 @@ def topic_weights(counter: Counter) -> List[Dict[str, int]]:
     ]
 
 
+def unit_topics(selected_units: List[int]) -> List[str]:
+    """Fallback topics derived from selected units when keyword counts are empty."""
+    topics = {skill for u in selected_units if u in UNIT_SKILL_MAP for skill in UNIT_SKILL_MAP[u]}
+    return list(topics) if topics else KEYWORDS[:10]
+
+
+def filter_counter(counter: Counter, allowed: List[str]) -> Counter:
+    if not allowed:
+        return counter
+    allowed_set = set(allowed)
+    return Counter({k: v for k, v in counter.items() if k in allowed_set})
+
+
 def get_client(api_key: str) -> OpenAI:
     return OpenAI(api_key=api_key, base_url=API_BASE_URL)
 
@@ -174,6 +198,7 @@ def generate_questions(
     selected_units: List[int],
     topics: List[str],
     weighted_topics: List[Dict[str, int]],
+    allowed_topics: List[str],
     difficulty: str,
 ) -> List[Dict]:
     prompt = (
@@ -188,6 +213,7 @@ def generate_questions(
         " Output exactly 20 questions—no more, no less."
         f" Use this weighted emphasis (allocate questions roughly proportionally): {json.dumps(weighted_topics)}."
         " Ensure top 3 weighted topics each get at least 2 questions; remaining topics at least 1."
+        f" Use ONLY these allowed topics and content appropriate to the selected units—avoid topics from other units: {allowed_topics}."
     )
     response = client.chat.completions.create(
         model=MODEL_NAME,
@@ -391,7 +417,8 @@ def ensure_db() -> None:
                 units TEXT NOT NULL,
                 score INTEGER NOT NULL,
                 details TEXT,
-                difficulty TEXT
+                difficulty TEXT,
+                revision TEXT
             )
             """
         )
@@ -399,13 +426,21 @@ def ensure_db() -> None:
         cols = {row[1] for row in conn.execute("PRAGMA table_info(quizzes)")}
         if "difficulty" not in cols:
             conn.execute("ALTER TABLE quizzes ADD COLUMN difficulty TEXT")
+            cols.add("difficulty")
+        if "revision" not in cols:
+            conn.execute("ALTER TABLE quizzes ADD COLUMN revision TEXT")
         conn.commit()
     finally:
         conn.close()
 
 
 def save_quiz_result(
-    student: str, units: List[int], score: int, feedback: List[str], difficulty: str
+    student: str,
+    units: List[int],
+    score: int,
+    feedback: List[str],
+    difficulty: str,
+    revision: str,
 ) -> None:
     ensure_db()
     conn = sqlite3.connect(PROGRESS_DB_PATH)
@@ -413,8 +448,8 @@ def save_quiz_result(
         units_str = ",".join(str(u) for u in sorted(units))
         conn.execute(
             """
-            INSERT INTO quizzes (student, quiz_date, units, score, details, difficulty)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO quizzes (student, quiz_date, units, score, details, difficulty, revision)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 student,
@@ -423,6 +458,7 @@ def save_quiz_result(
                 score,
                 json.dumps(feedback),
                 difficulty,
+                revision,
             ),
         )
         conn.commit()
@@ -436,7 +472,7 @@ def fetch_progress(student: str) -> List[Tuple[str, int, str]]:
     conn = sqlite3.connect(PROGRESS_DB_PATH)
     try:
         cursor = conn.execute(
-            "SELECT units, score, quiz_date, details, difficulty FROM quizzes WHERE student = ?",
+            "SELECT units, score, quiz_date, details, difficulty, revision FROM quizzes WHERE student = ?",
             (student,),
         )
         return cursor.fetchall()
@@ -450,17 +486,6 @@ def render_progress(student: str) -> None:
         st.info("No quizzes yet.")
         return
 
-    # Hardcoded skills mapping per unit (extend as needed)
-    unit_skill_map = {
-        1: ["integers", "expressions"],
-        2: ["equations", "inequalities"],
-        3: ["ratios", "percents"],
-        4: ["proportions", "unit rates"],
-        5: ["geometry", "area", "perimeter"],
-        6: ["volume", "surface area"],
-        7: ["statistics", "data displays"],
-    }
-
     unit_scores: defaultdict[int, List[int]] = defaultdict(list)
     daily: Dict[str, Dict] = {}
     table_rows = []
@@ -470,7 +495,7 @@ def render_progress(student: str) -> None:
         "medium": "Adventurer Quest",
         "complex": "Boss Battle",
     }
-    for units_str, score, quiz_day, details_json, difficulty in records:
+    for units_str, score, quiz_day, details_json, difficulty, revision in records:
         quiz_day = quiz_day or ""
         diff_label = difficulty or ""
         table_rows.append(
@@ -479,6 +504,7 @@ def render_progress(student: str) -> None:
                 "Units": units_str,
                 "Score": score,
                 "Mode": difficulty_labels_inv.get(diff_label, diff_label),
+                "Needs Revision": revision or "",
                 "Feedback": ", ".join(json.loads(details_json)[:2]) if details_json else "",
             }
         )
@@ -518,7 +544,7 @@ def render_progress(student: str) -> None:
         count = meta["count"]
         units_list = sorted(meta["units"]) if meta["units"] else []
         skills = sorted(
-            {skill for u in units_list for skill in unit_skill_map.get(u, [])}
+            {skill for u in units_list for skill in UNIT_SKILL_MAP.get(u, [])}
         )
         tooltip = (
             f"Date: {day_str}<br>"
@@ -586,6 +612,70 @@ def init_session_state() -> None:
     st.session_state.setdefault("last_quiz_raw", "")
     st.session_state.setdefault("last_quiz_error", "")
     st.session_state.setdefault("quiz_locked", False)
+    st.session_state.setdefault("show_progress", False)
+
+
+def reset_quiz_state(clear_questions: bool = True) -> None:
+    """Reset quiz interaction state and optionally clear questions."""
+    for key in list(st.session_state.keys()):
+        if key.startswith("answer_"):
+            del st.session_state[key]
+    if clear_questions:
+        st.session_state["questions"] = []
+    st.session_state["answers_submitted"] = False
+    st.session_state["quiz_locked"] = False
+    st.session_state["last_quiz_error"] = ""
+
+
+def escape_markdown(text: str) -> str:
+    """Escape characters that Streamlit markdown treats specially (including $)."""
+    if text is None:
+        return ""
+    return re.sub(r"([\\`*_{}\[\]()#+\-.!|>$])", r"\\\1", str(text))
+
+
+def clean_question_text(text: str, has_options: bool) -> str:
+    """Remove embedded option text if options are rendered separately."""
+    if text is None:
+        return ""
+    cleaned = str(text)
+    cleaned = cleaned.replace("(Multiple choice)", "").replace("(multiple choice)", "")
+    if has_options:
+        # Drop lines after the first line to avoid inline options
+        cleaned = cleaned.splitlines()[0]
+        # Trim at common option prefixes
+        for marker in [" A)", " A.", "A)", "A."]:
+            if marker in cleaned:
+                cleaned = cleaned.split(marker)[0]
+                break
+    return cleaned.strip()
+
+
+def summarize_revision(feedback: List[str], units: List[int], max_items: int = 3) -> str:
+    """Friendly revision summary: concepts by unit + top feedback notes."""
+    skill_set = {
+        skill for u in units if u in UNIT_SKILL_MAP for skill in UNIT_SKILL_MAP[u]
+    }
+    parts = []
+    if skill_set:
+        parts.append("Concepts to review: " + ", ".join(sorted(skill_set)))
+    if feedback:
+        parts.append("Key notes: " + "; ".join(feedback[:max_items]))
+    return " | ".join(parts)
+    st.session_state.setdefault("answers_submitted", False)
+
+
+def reset_quiz_state(clear_questions: bool = True) -> None:
+    """Reset state for starting a fresh quiz."""
+    if clear_questions:
+        st.session_state["questions"] = []
+    st.session_state["quiz_locked"] = False
+    st.session_state["answers_submitted"] = False
+    st.session_state["last_quiz_error"] = ""
+    # Clear any stored answers
+    for key in list(st.session_state.keys()):
+        if key.startswith("answer_"):
+            del st.session_state[key]
 
 
 def main() -> None:
@@ -606,6 +696,10 @@ def main() -> None:
     student_name = st.text_input("Student Name (required)")
     debug_raw = st.checkbox("Show raw quiz response (debug)", value=False)
     st.session_state["last_quiz_error"] = ""
+
+    if st.button("Start New Quiz"):
+        reset_quiz_state(clear_questions=True)
+        st.success("Quiz state cleared. Select units and generate a new quiz.")
 
     st.info(
         f"Copy Springboard Course 2 PDFs into the folder: {PDF_FOLDER} "
@@ -638,14 +732,24 @@ def main() -> None:
 
     if st.sidebar.button("View Progress"):
         if student_name:
-            render_progress(student_name)
+            st.session_state["show_progress"] = True
         else:
             st.sidebar.warning("Enter the student name to view progress.")
+
+    if st.session_state.get("show_progress"):
+        st.subheader("Progress")
+        if student_name:
+            render_progress(student_name)
+        else:
+            st.warning("Enter the student name to view progress.")
+        if st.button("Back to Quiz"):
+            st.session_state["show_progress"] = False
+        return
 
     if st.button("Generate Quiz"):
         generation_error = None
         # Starting a new quiz unlocks submission and clears previous answers
-        st.session_state["quiz_locked"] = False
+        reset_quiz_state(clear_questions=False)
         if not student_name:
             generation_error = "Please enter the student name before generating a quiz."
         if not selected_units:
@@ -658,8 +762,12 @@ def main() -> None:
             st.session_state["questions"] = []
         else:
             aggregated = aggregate_keywords(selected_units, units_data)
-            topics = top_topics(aggregated)
-            weighted_topics = topic_weights(aggregated)
+            allowed = unit_topics(selected_units)
+            filtered = filter_counter(aggregated, allowed) if aggregated else Counter()
+            topics = top_topics(filtered) if filtered else allowed
+            weighted_topics = topic_weights(filtered) if filtered else [
+                {"topic": t, "weight": 1} for t in allowed
+            ]
             client = get_client(api_key)
 
             with st.spinner("Generating quiz with Grok..."):
@@ -669,6 +777,7 @@ def main() -> None:
                         selected_units=selected_units,
                         topics=topics,
                         weighted_topics=weighted_topics,
+                        allowed_topics=allowed,
                         difficulty=difficulty,
                     )
                 except Exception as exc:
@@ -694,11 +803,20 @@ def main() -> None:
         disable_inputs = st.session_state.get("quiz_locked", False)
         with st.form("quiz_form"):
             for idx, q in enumerate(questions):
-                st.markdown(f"**Q{idx + 1}. {q.get('question','')}**")
+                has_opts = bool(q.get("options"))
+                q_text = escape_markdown(clean_question_text(q.get("question", ""), has_opts))
+                st.markdown(f"**Q{idx + 1}.** {q_text}")
                 options = q.get("options")
                 key = f"answer_{idx}"
                 if options and isinstance(options, list):
-                    st.radio("Choose an answer:", options, key=key, index=None, disabled=disable_inputs)
+                    safe_opts = [escape_markdown(opt) for opt in options]
+                    st.radio(
+                        "Choose an answer:",
+                        safe_opts,
+                        key=key,
+                        index=None,
+                        disabled=disable_inputs,
+                    )
                 else:
                     st.text_input("Your answer:", key=key, disabled=disable_inputs)
                 st.markdown("---")
@@ -708,6 +826,16 @@ def main() -> None:
         if submitted and disable_inputs:
             st.info("Quiz locked. Start a new test to answer again.")
         elif submitted:
+            # Input guard: ensure all answers provided
+            missing = []
+            for idx, q in enumerate(questions):
+                ans = st.session_state.get(f"answer_{idx}", None)
+                if ans is None or (isinstance(ans, str) and not ans.strip()):
+                    missing.append(idx + 1)
+            if missing:
+                st.error(f"Please answer all questions before submitting. Missing: {missing}")
+                return
+
             if not student_name:
                 st.error("Student name is required to grade and save results.")
                 return
@@ -734,15 +862,25 @@ def main() -> None:
                     st.error(f"Grading failed: {exc}")
                     return
 
-            st.success(f"Score: {score}/20")
+            st.success("Quiz graded")
+            st.metric("Score (out of 20)", score)
+            st.caption(f"Units: {selected_units} | Mode: {difficulty_label}")
             if feedback:
-                st.write("Feedback:")
+                st.markdown("**Feedback (needs work first, strengths last):**")
                 for item in feedback:
-                    st.write(f"- {item}")
+                    st.write(f"• {item}")
 
             # Map label back to internal difficulty code
             difficulty_code = difficulty
-            save_quiz_result(student_name, selected_units, score, feedback, difficulty_code)
+            revision = summarize_revision(feedback, selected_units, max_items=3)
+            save_quiz_result(
+                student_name,
+                selected_units,
+                score,
+                feedback,
+                difficulty_code,
+                revision,
+            )
             st.session_state["answers_submitted"] = True
             st.session_state["quiz_locked"] = True
         elif disable_inputs:
