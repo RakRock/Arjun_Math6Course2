@@ -51,5 +51,25 @@
     "circle": 4,
     "area": 11,
     "variable": 1
+  },
+  "Course 2 Unit 4 SE.pdf": {
+    "geometry": 48,
+    "angle": 104,
+    "area": 232,
+    "volume": 85,
+    "circle": 91,
+    "triangle": 157,
+    "expression": 1,
+    "equation": 21,
+    "data": 6,
+    "rate": 1,
+    "inequality": 1,
+    "table": 8,
+    "ratio": 13,
+    "proportion": 11,
+    "fraction": 2,
+    "decimal": 4,
+    "perimeter": 10,
+    "graph": 1
   }
 }

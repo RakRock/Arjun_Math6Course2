@@ -698,7 +698,7 @@ def main() -> None:
                 options = q.get("options")
                 key = f"answer_{idx}"
                 if options and isinstance(options, list):
-                    st.radio("Choose an answer:", options, key=key, index=0, disabled=disable_inputs)
+                    st.radio("Choose an answer:", options, key=key, index=None, disabled=disable_inputs)
                 else:
                     st.text_input("Your answer:", key=key, disabled=disable_inputs)
                 st.markdown("---")
