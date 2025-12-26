@@ -11,7 +11,7 @@ import streamlit as st
 from openai import OpenAI
 
 BASE_DIR = Path(__file__).resolve().parent
-PROGRESS_DB_PATH = BASE_DIR / "progress.db"
+VOCAB_DB_PATH = BASE_DIR / "vocab_progress.db"
 MODEL_NAME = "grok-4-fast"
 API_BASE_URL = "https://api.x.ai/v1"
 
@@ -305,10 +305,26 @@ def ensure_mc_options(answer: str) -> List[str]:
     return opts
 
 
+def clean_question_text(text: str) -> str:
+    """Strip inline options/markers from question text."""
+    if text is None:
+        return ""
+    cleaned = str(text)
+    cleaned = cleaned.replace("(Multiple choice)", "").replace("(multiple choice)", "")
+    # Keep only the first line to drop inline option lists if present
+    cleaned = cleaned.splitlines()[0]
+    # Trim at common option markers
+    for marker in [" A)", " A.", "A)", "A."]:
+        if marker in cleaned:
+            cleaned = cleaned.split(marker)[0]
+            break
+    return cleaned.strip()
+
+
 def ensure_vocab_db() -> None:
     import sqlite3
 
-    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    conn = sqlite3.connect(VOCAB_DB_PATH)
     try:
         conn.execute(
             """
@@ -356,7 +372,7 @@ def get_current_difficulty(student: str) -> str:
     import sqlite3
 
     ensure_vocab_db()
-    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    conn = sqlite3.connect(VOCAB_DB_PATH)
     try:
         row = conn.execute(
             "SELECT current_difficulty FROM users WHERE student = ?", (student,)
@@ -386,7 +402,7 @@ def update_difficulty(student: str, score: int, total: int = 15) -> str:
     new_level = DIFFICULTY_ORDER[idx]
     import sqlite3
 
-    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    conn = sqlite3.connect(VOCAB_DB_PATH)
     try:
         conn.execute(
             "UPDATE users SET current_difficulty = ? WHERE student = ?",
@@ -410,7 +426,7 @@ def record_session(
     import sqlite3
 
     ensure_vocab_db()
-    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    conn = sqlite3.connect(VOCAB_DB_PATH)
     try:
         conn.execute(
             """
@@ -437,7 +453,7 @@ def fetch_sessions(student: str) -> List[Tuple]:
     import sqlite3
 
     ensure_vocab_db()
-    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    conn = sqlite3.connect(VOCAB_DB_PATH)
     try:
         return conn.execute(
             "SELECT session_date, exercise_type, score, words_mastered, wrong_words, feedback, difficulty FROM sessions WHERE student = ?",
@@ -479,7 +495,7 @@ def update_wrong_words(student: str, wrong_words: List[str]) -> None:
     if not wrong_words:
         return
     ensure_vocab_db()
-    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    conn = sqlite3.connect(VOCAB_DB_PATH)
     try:
         for w in wrong_words:
             conn.execute(
@@ -499,7 +515,7 @@ def fetch_wrong_words(student: str) -> List[Tuple[str, int]]:
     import sqlite3
 
     ensure_vocab_db()
-    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    conn = sqlite3.connect(VOCAB_DB_PATH)
     try:
         return conn.execute(
             "SELECT word, count FROM wrong_words WHERE student = ? ORDER BY count DESC",
@@ -693,7 +709,10 @@ def render_vocab_progress(student: str) -> None:
         st.success("Badges: " + ", ".join(badges))
 
     st.subheader("Session History")
-    st.dataframe(pd.DataFrame(table_rows).sort_values("Date", ascending=False), use_container_width=True)
+    st.dataframe(
+        pd.DataFrame(table_rows).sort_values("Date", ascending=False),
+        width="stretch",
+    )
 
     if all_words:
         st.subheader("Top Words Learned")
@@ -715,7 +734,7 @@ def vocab_tab_content():
     api_key = os.getenv("XAI_API_KEY") or st.secrets.get("XAI_API_KEY", "")
     if not api_key:
         st.warning("Set XAI_API_KEY in env or secrets for Grok access.")
-    st.title("Vocab Builder: Fun English for 11-Year-Olds! 📚✨")
+    st.title("Vocab Builder: Fun English 📚✨")
     student = st.text_input("Student Name (required)", key="vocab_student")
     debug_raw = st.checkbox("Show raw vocab response (debug)", value=False)
     exercise_type = st.selectbox(
@@ -758,7 +777,8 @@ def vocab_tab_content():
         disable_inputs = st.session_state.get("vocab_locked", False)
         with st.form("vocab_form"):
             for idx, q in enumerate(questions):
-                st.markdown(f"**Q{idx + 1}. {q.get('question','')}**")
+                q_text = clean_question_text(q.get("question", ""))
+                st.markdown(f"**Q{idx + 1}. {q_text}**")
                 options = q.get("options")
                 key = f"vocab_answer_{idx}"
                 if options and isinstance(options, list):

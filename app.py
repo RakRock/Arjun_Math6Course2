@@ -495,6 +495,9 @@ def render_progress(student: str) -> None:
         "medium": "Adventurer Quest",
         "complex": "Boss Battle",
     }
+    all_quizzes_count = len(records)
+    last_score = records[-1][1] if records else None
+
     for units_str, score, quiz_day, details_json, difficulty, revision in records:
         quiz_day = quiz_day or ""
         diff_label = difficulty or ""
@@ -587,23 +590,50 @@ def render_progress(student: str) -> None:
     fig.update_traces(customdata=heat_df["tooltip"])
 
     st.subheader("Progress Dashboard")
+    st.caption("Activity heatmap (darker = more quizzes that day)")
     st.plotly_chart(fig, width="stretch")
 
-    # Summary stats
+    # Summary metrics
     quiz_days = {d for d in daily.keys() if d}
-    st.write(f"Unique days quizzed: {len(quiz_days)}")
-    for unit, scores in sorted(unit_scores.items()):
-        avg_score = sum(scores) / len(scores)
-        st.write(
-            f"Unit {unit}: Avg Score {avg_score:.1f}/20, Quizzes Taken: {len(scores)}"
-        )
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Unique Days", len(quiz_days))
+    col2.metric("Total Quizzes", all_quizzes_count)
+    col3.metric("Last Score", f"{last_score}/20" if last_score is not None else "—")
 
-    # History table
+    st.divider()
+    st.subheader("Unit Averages")
+    units_sorted = sorted(unit_scores.items())
+    if units_sorted:
+        cols = st.columns(min(3, len(units_sorted)))
+        for idx, (unit, scores) in enumerate(units_sorted):
+            with cols[idx % len(cols)]:
+                avg_score = sum(scores) / len(scores)
+                st.write(f"**Unit {unit}**")
+                st.write(f"Avg {avg_score:.1f}/20 • {len(scores)} quiz(es)")
+    else:
+        st.info("No unit data yet.")
+
+    st.divider()
     st.subheader("Quiz History")
-    st.dataframe(
-        pd.DataFrame(table_rows).sort_values("Date", ascending=False),
-        width="stretch",
-    )
+    df = pd.DataFrame(table_rows).sort_values("Date", ascending=False)
+
+    # Filters
+    all_units = sorted({u for row in df["Units"] for u in row.split(",") if u.strip().isdigit()}) if not df.empty else []
+    all_modes = sorted({m for m in df["Mode"] if m})
+    f1, f2 = st.columns(2)
+    sel_units = f1.multiselect("Filter by unit", options=all_units, default=all_units)
+    sel_modes = f2.multiselect("Filter by mode", options=all_modes, default=all_modes or None)
+
+    if sel_units:
+        df = df[df["Units"].apply(lambda x: any(u.strip() in sel_units for u in x.split(",")))]
+    if sel_modes:
+        df = df[df["Mode"].isin(sel_modes)]
+
+    recent = df.head(10)
+    st.dataframe(recent, width="stretch", height=320)
+    if len(df) > len(recent):
+        with st.expander(f"Show all ({len(df)} rows)"):
+            st.dataframe(df, width="stretch", height=500)
 
 
 def init_session_state() -> None:
