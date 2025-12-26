@@ -587,7 +587,7 @@ def render_progress(student: str) -> None:
     fig.update_traces(customdata=heat_df["tooltip"])
 
     st.subheader("Progress Dashboard")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     # Summary stats
     quiz_days = {d for d in daily.keys() if d}
@@ -599,11 +599,11 @@ def render_progress(student: str) -> None:
         )
 
     # History table
-        st.subheader("Quiz History")
-        st.dataframe(
-            pd.DataFrame(table_rows).sort_values("Date", ascending=False),
-            use_container_width=True,
-        )
+    st.subheader("Quiz History")
+    st.dataframe(
+        pd.DataFrame(table_rows).sort_values("Date", ascending=False),
+        width="stretch",
+    )
 
 
 def init_session_state() -> None:

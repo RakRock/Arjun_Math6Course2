@@ -1,0 +1,831 @@
+import json
+import os
+import random
+from collections import defaultdict
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import pandas as pd
+import streamlit as st
+from openai import OpenAI
+
+BASE_DIR = Path(__file__).resolve().parent
+PROGRESS_DB_PATH = BASE_DIR / "progress.db"
+MODEL_NAME = "grok-4-fast"
+API_BASE_URL = "https://api.x.ai/v1"
+
+# 6th-grade friendly base word list (sample; expand as needed)
+BASE_WORDS = [
+    "abundant",
+    "cautious",
+    "brisk",
+    "daring",
+    "eager",
+    "faithful",
+    "gather",
+    "harvest",
+    "improve",
+    "jolly",
+    "keen",
+    "lively",
+    "mystery",
+    "noble",
+    "observe",
+    "polite",
+    "quiet",
+    "radiant",
+    "steady",
+    "timid",
+    "unique",
+    "vivid",
+    "wander",
+    "youthful",
+    "zealous",
+    "ancient",
+    "balance",
+    "capture",
+    "distant",
+    "elevate",
+    "forgive",
+    "glance",
+    "humble",
+    "insight",
+    "journey",
+    "kindle",
+    "lengthy",
+    "mingle",
+    "nurture",
+    "outcome",
+    "pioneer",
+    "rescue",
+    "sincere",
+    "thrive",
+    "uplift",
+    "vital",
+    "wisdom",
+    "zephyr",
+    "adapt",
+    "brave",
+    "curious",
+    "delight",
+    "elegant",
+    "fable",
+    "gentle",
+    "honest",
+    "invent",
+    "jungle",
+    "kindness",
+    "legend",
+    "mighty",
+    "notice",
+    "originate",
+    "protect",
+    "question",
+    "reliable",
+    "spark",
+    "treasure",
+    "uplift",
+    "value",
+    "wonder",
+    "yearn",
+    "zeal",
+    "ally",
+    "bold",
+    "contrast",
+    "define",
+    "essence",
+    "flexible",
+    "glow",
+    "harbor",
+    "ideal",
+    "jovial",
+    "limit",
+    "maintain",
+    "nervous",
+    "optimistic",
+    "precise",
+    "quest",
+    "renew",
+    "steady",
+    "talent",
+    "uphold",
+    "verify",
+    "whisper",
+    "yield",
+    "zenith",
+    # Additional easy/moderate words
+    "bright",
+    "calm",
+    "cheerful",
+    "clever",
+    "confident",
+    "cozy",
+    "creative",
+    "curious",
+    "dazzle",
+    "eager",
+    "fancy",
+    "friendly",
+    "gentle",
+    "giggle",
+    "happy",
+    "helpful",
+    "honest",
+    "hopeful",
+    "joyful",
+    "kind",
+    "lucky",
+    "mild",
+    "neat",
+    "nice",
+    "peaceful",
+    "playful",
+    "polite",
+    "proud",
+    "quiet",
+    "rapid",
+    "shiny",
+    "silly",
+    "smart",
+    "soft",
+    "speedy",
+    "strong",
+    "sweet",
+    "tasty",
+    "thankful",
+    "tidy",
+    "warm",
+    "wild",
+    "wise",
+    "wonderful",
+    "zippy",
+    "ancient",
+    "arrive",
+    "assist",
+    "attempt",
+    "bold",
+    "brief",
+    "calmly",
+    "careful",
+    "caring",
+    "cautious",
+    "certain",
+    "chief",
+    "choose",
+    "clearly",
+    "comfort",
+    "common",
+    "complete",
+    "consider",
+    "contain",
+    "control",
+    "correct",
+    "decide",
+    "defend",
+    "depend",
+    "describe",
+    "direct",
+    "discover",
+    "distant",
+    "divide",
+    "easily",
+    "effort",
+    "encourage",
+    "energy",
+    "explain",
+    "famous",
+    "fierce",
+    "follow",
+    "fortunate",
+    "frequent",
+    "future",
+    "gather",
+    "gigantic",
+    "graceful",
+    "greet",
+    "healthy",
+    "identify",
+    "imagine",
+    "improve",
+    "include",
+    "inform",
+    "inspire",
+    "involve",
+    "journey",
+    "leader",
+    "liberty",
+    "limit",
+    "major",
+    "manage",
+    "mature",
+    "mention",
+    "mighty",
+    "modern",
+    "native",
+    "notice",
+    "observe",
+    "organize",
+    "patient",
+    "permit",
+    "persuade",
+    "possible",
+    "prefer",
+    "prepare",
+    "pretend",
+    "prevent",
+    "protect",
+    "provide",
+    "puzzle",
+    "recall",
+    "recent",
+    "reflect",
+    "refuse",
+    "relax",
+    "remain",
+    "remind",
+    "rescue",
+    "respect",
+    "review",
+    "reward",
+    "satisfy",
+    "scarce",
+    "select",
+    "sincere",
+    "solution",
+    "steady",
+    "strength",
+    "struggle",
+    "support",
+    "talent",
+    "tender",
+    "travel",
+    "unite",
+    "value",
+    "wander",
+    "warn",
+    "wealthy",
+    "wildlife",
+    "willing",
+    "wonder",
+    "worthy",
+]
+
+DIFFICULTY_ORDER = ["Easy", "Medium", "Hard"]
+
+
+def get_client(api_key: str) -> OpenAI:
+    return OpenAI(api_key=api_key, base_url=API_BASE_URL)
+
+
+def _extract_dicts_from_text(raw: str) -> List[Dict]:
+    """Best-effort extraction of JSON objects from arbitrary text."""
+    decoder = json.JSONDecoder()
+    objs = []
+    idx = 0
+    length = len(raw)
+    while idx < length:
+        try:
+            obj, end = decoder.raw_decode(raw, idx)
+            if isinstance(obj, dict):
+                objs.append(obj)
+            idx = end
+        except json.JSONDecodeError:
+            idx += 1
+    return objs
+
+
+def ensure_mc_options(answer: str) -> List[str]:
+    """Ensure 4 multiple-choice options including the correct answer."""
+    ans = str(answer).strip()
+    pool = [w for w in BASE_WORDS if w.lower() != ans.lower()]
+    distractors = random.sample(pool, k=3) if len(pool) >= 3 else pool[:3]
+    opts = [ans] + distractors
+    random.shuffle(opts)
+    return opts
+
+
+def ensure_vocab_db() -> None:
+    import sqlite3
+
+    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                student TEXT PRIMARY KEY,
+                current_difficulty TEXT DEFAULT 'Easy'
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                student TEXT NOT NULL,
+                session_date TEXT NOT NULL,
+                exercise_type TEXT NOT NULL,
+                score INTEGER NOT NULL,
+                words_mastered TEXT,
+                wrong_words TEXT,
+                feedback TEXT,
+                difficulty TEXT
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wrong_words (
+                student TEXT NOT NULL,
+                word TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (student, word)
+            )
+            """
+        )
+        # migrations
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+        if "wrong_words" not in cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN wrong_words TEXT")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_current_difficulty(student: str) -> str:
+    import sqlite3
+
+    ensure_vocab_db()
+    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    try:
+        row = conn.execute(
+            "SELECT current_difficulty FROM users WHERE student = ?", (student,)
+        ).fetchone()
+        if row:
+            return row[0]
+        conn.execute(
+            "INSERT INTO users (student, current_difficulty) VALUES (?, ?)",
+            (student, "Easy"),
+        )
+        conn.commit()
+        return "Easy"
+    finally:
+        conn.close()
+
+
+def update_difficulty(student: str, score: int, total: int = 15) -> str:
+    pct = score / total
+    current = get_current_difficulty(student)
+    idx = DIFFICULTY_ORDER.index(current)
+    if pct >= 0.9 and idx < len(DIFFICULTY_ORDER) - 1:
+        idx += 1
+    elif pct >= 0.8 and idx < len(DIFFICULTY_ORDER) - 1:
+        idx += 1
+    elif pct < 0.6 and idx > 0:
+        idx -= 1
+    new_level = DIFFICULTY_ORDER[idx]
+    import sqlite3
+
+    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    try:
+        conn.execute(
+            "UPDATE users SET current_difficulty = ? WHERE student = ?",
+            (new_level, student),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return new_level
+
+
+def record_session(
+    student: str,
+    exercise_type: str,
+    score: int,
+    words_mastered: List[str],
+    feedback: List[str],
+    difficulty: str,
+    wrong_words: List[str],
+) -> None:
+    import sqlite3
+
+    ensure_vocab_db()
+    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    try:
+        conn.execute(
+            """
+            INSERT INTO sessions (student, session_date, exercise_type, score, words_mastered, wrong_words, feedback, difficulty)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                student,
+                date.today().isoformat(),
+                exercise_type,
+                score,
+                json.dumps(words_mastered or []),
+                json.dumps(wrong_words or []),
+                json.dumps(feedback or []),
+                difficulty,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fetch_sessions(student: str) -> List[Tuple]:
+    import sqlite3
+
+    ensure_vocab_db()
+    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    try:
+        return conn.execute(
+            "SELECT session_date, exercise_type, score, words_mastered, wrong_words, feedback, difficulty FROM sessions WHERE student = ?",
+            (student,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def compute_streak(dates: List[date]) -> int:
+    if not dates:
+        return 0
+    uniq = sorted(set(dates))
+    streak = 1
+    best = 1
+    for i in range(len(uniq) - 1, 0, -1):
+        if uniq[i] - uniq[i - 1] == timedelta(days=1):
+            streak += 1
+            best = max(best, streak)
+        else:
+            streak = 1
+    return best
+
+
+def award_badges(scores: List[int]) -> List[str]:
+    badges = []
+    if any(s >= 12 for s in scores):
+        badges.append("Vocab Hero 🏅")
+    if any(s >= 14 for s in scores):
+        badges.append("Synonym Star 🌟")
+    if len(scores) >= 5 and sum(scores) / len(scores) >= 12:
+        badges.append("Consistency Champ 🧠")
+    return badges
+
+
+def update_wrong_words(student: str, wrong_words: List[str]) -> None:
+    import sqlite3
+
+    if not wrong_words:
+        return
+    ensure_vocab_db()
+    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    try:
+        for w in wrong_words:
+            conn.execute(
+                """
+                INSERT INTO wrong_words (student, word, count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(student, word) DO UPDATE SET count = count + 1
+                """,
+                (student, w),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fetch_wrong_words(student: str) -> List[Tuple[str, int]]:
+    import sqlite3
+
+    ensure_vocab_db()
+    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    try:
+        return conn.execute(
+            "SELECT word, count FROM wrong_words WHERE student = ? ORDER BY count DESC",
+            (student,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+
+def generate_vocab_questions(
+    client: OpenAI, student: str, exercise_type: str, difficulty: str, retries: int = 3
+) -> List[Dict]:
+    theme = "animals and adventures"
+    prompt = (
+        f"Generate 15 vocabulary exercises for an 11-year-old on {exercise_type},"
+        f" difficulty {difficulty}. ALL questions must be multiple-choice only."
+        " Provide exactly 4 options per question and make them 'choose the best answer' style."
+        f" Use these base words for inspiration: {BASE_WORDS[:30]}."
+        f" Theme: {theme}. Output JSON list of objects:"
+        ' [{"question": str, "options": list, "answer": str, "explanation": str}].'
+    )
+    last_err = None
+    attempts_log = []
+
+    def coerce_questions(parsed_obj):
+        if isinstance(parsed_obj, list):
+            return parsed_obj
+        if isinstance(parsed_obj, dict):
+            if isinstance(parsed_obj.get("questions"), list):
+                return parsed_obj["questions"]
+            # first list-valued entry
+            for val in parsed_obj.values():
+                if isinstance(val, list):
+                    return val
+            # dict of numbered objects
+            values = list(parsed_obj.values())
+            if values and all(isinstance(v, dict) for v in values):
+                return values
+        return None
+
+    last_count = 0
+    for attempt in range(retries + 1):
+        extra_prompt = ""
+        if attempt > 0:
+            extra_prompt = (
+                f" Previous attempt returned only {last_count} items. Regenerate exactly 15 items."
+            )
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            max_tokens=1500,
+            temperature=0.4 if attempt == 0 else 0.6,
+            response_format={"type": "json_object"},
+            timeout=60,
+            messages=[
+                {"role": "system", "content": "You are a fun English vocab coach for 11-year-olds."},
+                {"role": "user", "content": prompt + extra_prompt},
+            ],
+        )
+        content = response.choices[0].message.content.strip()
+        st.session_state["vocab_last_raw"] = content
+        attempts_log.append({"attempt": attempt + 1, "content_preview": content[:400]})
+
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError as exc:
+            last_err = exc
+            continue
+
+        questions = coerce_questions(parsed)
+        if not isinstance(questions, list):
+            last_err = ValueError("Vocab response was not a list.")
+            continue
+
+        cleaned = []
+        for item in questions:
+            if not isinstance(item, dict) or "question" not in item:
+                continue
+            answer_val = str(item.get("answer", "")).strip()
+            options_val = item.get("options") or None
+            if not options_val or not isinstance(options_val, list):
+                options_val = ensure_mc_options(answer_val)
+            cleaned.append(
+                {
+                    "question": str(item.get("question", "")).strip(),
+                    "options": options_val,
+                    "answer": answer_val,
+                    "explanation": str(item.get("explanation", "")).strip(),
+                }
+            )
+        if len(cleaned) >= 15:
+            st.session_state["vocab_attempts_log"] = attempts_log
+            return cleaned[:15]
+        last_count = len(cleaned)
+        # Try extracting dicts from free text as a fallback
+        extracted = _extract_dicts_from_text(content)
+        if extracted:
+            maybe = coerce_questions(extracted)
+            cleaned2 = []
+            if isinstance(maybe, list):
+                for item in maybe:
+                    if not isinstance(item, dict) or "question" not in item:
+                        continue
+                    cleaned2.append(
+                        {
+                            "question": str(item.get("question", "")).strip(),
+                            "options": item.get("options") or None,
+                            "answer": str(item.get("answer", "")).strip(),
+                            "explanation": str(item.get("explanation", "")).strip(),
+                        }
+                    )
+            if len(cleaned2) >= 15:
+                st.session_state["vocab_attempts_log"] = attempts_log
+                return cleaned2[:15]
+            last_count = len(cleaned2)
+            last_err = ValueError(f"Expected 15 vocab exercises, got {len(cleaned2)} after fallback.")
+        else:
+            last_err = ValueError(f"Expected 15 vocab exercises, got {len(cleaned)}.")
+
+    st.session_state["vocab_attempts_log"] = attempts_log
+    raise ValueError(f"Could not generate enough vocab exercises. Last error: {last_err}")
+
+
+def grade_vocab(client: OpenAI, qa_payload: List[Dict]) -> Tuple[int, List[str], List[str]]:
+    prompt = (
+        "Grade these vocab answers. Return JSON ONLY:"
+        ' {"score": int, "feedback": list of strings, "mastered_words": list of strings}.'
+        " Keep feedback brief and kid-friendly. Mastered words are those answered correctly or explained well."
+        f" Data: {json.dumps(qa_payload)}"
+    )
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        max_tokens=600,
+        temperature=0.3,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": "You are a concise, encouraging vocabulary grader."},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    content = response.choices[0].message.content.strip()
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Could not parse grading JSON. Details: {exc}") from exc
+    score = int(parsed.get("score", 0))
+    feedback = parsed.get("feedback") or []
+    mastered = parsed.get("mastered_words") or []
+    if not isinstance(feedback, list):
+        feedback = [str(feedback)]
+    if not isinstance(mastered, list):
+        mastered = [str(mastered)]
+    return score, [str(f) for f in feedback], [str(w) for w in mastered]
+
+
+def render_vocab_progress(student: str) -> None:
+    records = fetch_sessions(student)
+    if not records:
+        st.info("Start exercising to build your vocab!")
+        return
+    dates = []
+    scores = []
+    table_rows = []
+    all_words = []
+    for session_date, ex_type, score, words_json, wrong_json, feedback_json, difficulty in records:
+        dates.append(date.fromisoformat(session_date))
+        scores.append(score)
+        words = json.loads(words_json) if words_json else []
+        all_words.extend(words)
+        wrongs = json.loads(wrong_json) if wrong_json else []
+        for w in wrongs:
+            wrong_words_all.append(w)
+        feedback_list = json.loads(feedback_json) if feedback_json else []
+        table_rows.append(
+            {
+                "Date": session_date,
+                "Type": ex_type,
+                "Score": score,
+                "Difficulty": difficulty,
+                "Mastered": ", ".join(words[:3]) + ("..." if len(words) > 3 else ""),
+                "Missed": ", ".join(wrongs[:3]) + ("..." if len(wrongs) > 3 else ""),
+                "Feedback": "; ".join(feedback_list[:2]),
+            }
+        )
+
+    streak = compute_streak(dates)
+    badges = award_badges(scores)
+    st.metric("Streak (days)", streak)
+    st.metric("Sessions", len(records))
+    st.metric("Avg Score", f"{sum(scores)/len(scores):.1f}/15")
+    if badges:
+        st.success("Badges: " + ", ".join(badges))
+
+    st.subheader("Session History")
+    st.dataframe(pd.DataFrame(table_rows).sort_values("Date", ascending=False), use_container_width=True)
+
+    if all_words:
+        st.subheader("Top Words Learned")
+        counts = pd.Series(all_words).value_counts().head(10)
+        st.bar_chart(counts)
+
+    wrong_hist = fetch_wrong_words(student)
+    if wrong_hist:
+        st.subheader("Words to Review (missed most often)")
+        st.table(pd.DataFrame(wrong_hist, columns=["Word", "Missed Count"]).head(10))
+
+
+def main():
+    vocab_tab_content()
+
+
+def vocab_tab_content():
+    ensure_vocab_db()
+    api_key = os.getenv("XAI_API_KEY") or st.secrets.get("XAI_API_KEY", "")
+    if not api_key:
+        st.warning("Set XAI_API_KEY in env or secrets for Grok access.")
+    st.title("Vocab Builder: Fun English for 11-Year-Olds! 📚✨")
+    student = st.text_input("Student Name (required)", key="vocab_student")
+    debug_raw = st.checkbox("Show raw vocab response (debug)", value=False)
+    exercise_type = st.selectbox(
+        "Pick exercise type",
+        ["Synonyms", "Antonyms", "Mixed Vocab", "Advanced (Analogies & Roots)"],
+    )
+
+    if st.button("My Progress"):
+        if not student:
+            st.error("Enter the student name to view progress.")
+        else:
+            render_vocab_progress(student)
+        st.stop()
+
+    if st.button("Start Exercises"):
+        if not student:
+            st.error("Enter the student name first.")
+            st.stop()
+        current_level = get_current_difficulty(student)
+        client = get_client(api_key)
+        with st.spinner(f"Generating exercises at {current_level}..."):
+            try:
+                questions = generate_vocab_questions(client, student, exercise_type, current_level)
+            except Exception as exc:
+                st.error(f"Generation failed: {exc}")
+                st.stop()
+        st.session_state["vocab_questions"] = questions
+        st.session_state["vocab_answers_submitted"] = False
+        st.session_state["vocab_locked"] = False
+        st.session_state["vocab_exercise_type"] = exercise_type
+        st.session_state["vocab_level"] = current_level
+        st.success("Exercises ready!")
+        if debug_raw and "vocab_last_raw" in st.session_state:
+            st.text_area("Raw vocab response", st.session_state["vocab_last_raw"], height=200)
+        if debug_raw and "vocab_attempts_log" in st.session_state:
+            st.json(st.session_state["vocab_attempts_log"])
+
+    questions = st.session_state.get("vocab_questions", [])
+    if questions:
+        disable_inputs = st.session_state.get("vocab_locked", False)
+        with st.form("vocab_form"):
+            for idx, q in enumerate(questions):
+                st.markdown(f"**Q{idx + 1}. {q.get('question','')}**")
+                options = q.get("options")
+                key = f"vocab_answer_{idx}"
+                if options and isinstance(options, list):
+                    st.radio("Choose an answer:", options, key=key, index=None, disabled=disable_inputs)
+                else:
+                    st.text_input("Your answer:", key=key, disabled=disable_inputs)
+                st.markdown("---")
+            submitted = st.form_submit_button("Submit", disabled=disable_inputs)
+
+        if submitted and disable_inputs:
+            st.info("Locked. Start new exercises to answer again.")
+        elif submitted:
+            # Input guard
+            missing = []
+            for idx, q in enumerate(questions):
+                ans = st.session_state.get(f"vocab_answer_{idx}", None)
+                if ans is None or (isinstance(ans, str) and not ans.strip()):
+                    missing.append(idx + 1)
+            if missing:
+                st.error(f"Please answer all questions before submitting. Missing: {missing}")
+                st.stop()
+
+            client = get_client(api_key)
+            qa_payload = []
+            wrong_words = []
+            for idx, q in enumerate(questions):
+                user_answer = st.session_state.get(f"vocab_answer_{idx}", "")
+                if str(user_answer).strip() != str(q.get("answer", "")).strip():
+                    wrong_words.append(str(q.get("answer", "")).strip())
+                qa_payload.append(
+                    {
+                        "question": q.get("question", ""),
+                        "user_answer": user_answer,
+                        "correct_answer": q.get("answer", ""),
+                        "explanation": q.get("explanation", ""),
+                    }
+                )
+
+            with st.spinner("Grading..."):
+                try:
+                    score, feedback, mastered = grade_vocab(client, qa_payload)
+                except Exception as exc:
+                    st.error(f"Grading failed: {exc}")
+                    st.stop()
+
+            st.success("Graded!")
+            st.metric("Score (out of 15)", score)
+            if feedback:
+                st.markdown("**Feedback (needs work first, strengths last):**")
+                for item in feedback:
+                    st.write(f"• {item}")
+            if mastered:
+                st.markdown("**Mastered words:** " + ", ".join(mastered))
+
+            new_level = update_difficulty(student, score, total=15)
+            update_wrong_words(student, wrong_words)
+            record_session(
+                student,
+                exercise_type,
+                score,
+                mastered,
+                feedback,
+                st.session_state.get("vocab_level", "Easy"),
+                wrong_words,
+            )
+
+
+if __name__ == "__main__":
+    main()
+
