@@ -1,3 +1,19 @@
+# Virtual env
+.venv/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Streamlit temp
+.streamlit/
+
+# Local databases
+progress.db
+vocab_progress.db
+
+# Misc
+.DS_Store
 .env
 node_modules/
 venv/
