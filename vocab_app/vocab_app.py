@@ -13,6 +13,7 @@ from typing import Dict, List, Tuple
 import pandas as pd
 import streamlit as st
 from openai import OpenAI
+from streamlit_autorefresh import st_autorefresh
 
 BASE_DIR = Path(__file__).resolve().parent
 VOCAB_DB_PATH = BASE_DIR / "vocab_progress.db"
@@ -1102,6 +1103,8 @@ def main():
 
 def vocab_tab_content():
     ensure_vocab_db()
+    # Keep-alive to prevent long-idle disconnects (every 4 minutes)
+    st_autorefresh(interval=240_000, key="keepalive_vocab")
     api_key = os.getenv("XAI_API_KEY") or st.secrets.get("XAI_API_KEY", "")
     if not api_key:
         st.warning("Set XAI_API_KEY in env or secrets for Grok access.")

@@ -16,6 +16,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from openai import OpenAI
+from streamlit_autorefresh import st_autorefresh
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -782,6 +783,8 @@ def reset_quiz_state(clear_questions: bool = True) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="6th Grade Springboard Course 2 Quiz Generator")
+    # Keep-alive to prevent long-idle disconnects (every 4 minutes)
+    st_autorefresh(interval=240_000, key="keepalive_math")
     init_session_state()
     ensure_db()
     ensure_pdf_folder()
