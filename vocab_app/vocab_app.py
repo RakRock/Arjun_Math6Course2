@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import re
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -269,6 +270,256 @@ BASE_WORDS = [
     "willing",
     "wonder",
     "worthy",
+    # Extra easy/moderate words
+    "ability",
+    "accurate",
+    "active",
+    "admire",
+    "adventure",
+    "afford",
+    "agree",
+    "alert",
+    "amazing",
+    "amuse",
+    "announce",
+    "applaud",
+    "approach",
+    "arrange",
+    "assist",
+    "attract",
+    "avoid",
+    "aware",
+    "balance",
+    "behave",
+    "belong",
+    "benefit",
+    "bravery",
+    "briefly",
+    "brighten",
+    "bundle",
+    "calmness",
+    "careless",
+    "celebrate",
+    "certainly",
+    "challenge",
+    "cheer",
+    "clarify",
+    "collect",
+    "combine",
+    "comfort",
+    "communicate",
+    "compare",
+    "complain",
+    "complete",
+    "concern",
+    "confirm",
+    "confuse",
+    "connect",
+    "consider",
+    "construct",
+    "contain",
+    "continue",
+    "contribute",
+    "convince",
+    "cooperate",
+    "courage",
+    "create",
+    "curiosity",
+    "decorate",
+    "defend",
+    "delicate",
+    "dependable",
+    "describe",
+    "deserve",
+    "design",
+    "develop",
+    "discover",
+    "distant",
+    "divide",
+    "donate",
+    "effort",
+    "elegant",
+    "encourage",
+    "enjoyable",
+    "enormous",
+    "entire",
+    "entrust",
+    "essential",
+    "estimate",
+    "evaluate",
+    "excellent",
+    "excited",
+    "expand",
+    "explain",
+    "explore",
+    "fairness",
+    "familiar",
+    "famous",
+    "fantastic",
+    "fascinate",
+    "flexible",
+    "fortunate",
+    "freedom",
+    "frequent",
+    "friendly",
+    "frustrate",
+    "genuine",
+    "grateful",
+    "harmony",
+    "helpful",
+    "honesty",
+    "imagine",
+    "improve",
+    "include",
+    "incredible",
+    "independent",
+    "inspire",
+    "intelligent",
+    "introduce",
+    "inventive",
+    "justice",
+    "kindness",
+    "knowledge",
+    "laughter",
+    "leadership",
+    "logical",
+    "lovable",
+    "mature",
+    "memorable",
+    "mysterious",
+    "natural",
+    "nervous",
+    "optimistic",
+    "ordinary",
+    "organize",
+    "participate",
+    "patience",
+    "peaceful",
+    "pleasant",
+    "politeness",
+    "popular",
+    "positive",
+    "possible",
+    "powerful",
+    "prepare",
+    "present",
+    "prevent",
+    "promise",
+    "protect",
+    "provide",
+    "puzzled",
+    "quality",
+    "realize",
+    "refresh",
+    "reliable",
+    "remarkable",
+    "repeat",
+    "replace",
+    "report",
+    "request",
+    "respectful",
+    "responsible",
+    "respond",
+    "result",
+    "rewarding",
+    "satisfy",
+    "scatter",
+    "sensible",
+    "serious",
+    "sincere",
+    "skillful",
+    "succeed",
+    "supportive",
+    "survive",
+    "talented",
+    "thankful",
+    "thoughtful",
+    "tolerant",
+    "tradition",
+    "trustworthy",
+    "understand",
+    "upgrade",
+    "valuable",
+    "variety",
+    "victory",
+    "welcome",
+    "wonderful",
+    "worthwhile",
+    # Slightly harder/academic (still kid-friendly)
+    "adaptable",
+    "ambitious",
+    "analyze",
+    "arrange",
+    "attempt",
+    "avenue",
+    "balance",
+    "cautious",
+    "collaborate",
+    "compassion",
+    "comprehend",
+    "conclusion",
+    "consequence",
+    "cooperate",
+    "culture",
+    "curious",
+    "determine",
+    "diligent",
+    "discovery",
+    "efficient",
+    "elaborate",
+    "empathy",
+    "encounter",
+    "endeavor",
+    "engage",
+    "estimate",
+    "evaluate",
+    "evidence",
+    "example",
+    "expand",
+    "experience",
+    "expression",
+    "factor",
+    "flexible",
+    "focus",
+    "function",
+    "illustrate",
+    "impact",
+    "indicate",
+    "influence",
+    "interpret",
+    "investigate",
+    "maintain",
+    "maximum",
+    "minimum",
+    "motivate",
+    "multiple",
+    "objective",
+    "observe",
+    "occur",
+    "outcome",
+    "pattern",
+    "perspective",
+    "primary",
+    "process",
+    "purpose",
+    "reason",
+    "reflect",
+    "relevant",
+    "require",
+    "research",
+    "resourceful",
+    "respond",
+    "result",
+    "similar",
+    "solution",
+    "structure",
+    "summarize",
+    "support",
+    "symbol",
+    "technique",
+    "theory",
+    "variable",
+    "verify",
 ]
 
 DIFFICULTY_ORDER = ["Easy", "Medium", "Hard"]
@@ -299,7 +550,12 @@ def ensure_mc_options(answer: str) -> List[str]:
     """Ensure 4 multiple-choice options including the correct answer."""
     ans = str(answer).strip()
     pool = [w for w in BASE_WORDS if w.lower() != ans.lower()]
-    distractors = random.sample(pool, k=3) if len(pool) >= 3 else pool[:3]
+    random.shuffle(pool)
+    # add a small shuffle offset to reduce repetition patterns
+    if len(pool) > 6:
+        offset = random.randint(0, min(6, len(pool) - 3))
+        pool = pool[offset:] + pool[:offset]
+    distractors = pool[:3] if len(pool) >= 3 else pool
     opts = [ans] + distractors
     random.shuffle(opts)
     return opts
@@ -321,6 +577,15 @@ def clean_question_text(text: str) -> str:
     return cleaned.strip()
 
 
+def clean_option(opt: str) -> str:
+    """Strip leading choice markers like 'A)' / 'B.' from options."""
+    if opt is None:
+        return ""
+    s = str(opt).strip()
+    s = re.sub(r"^[A-Da-d][\)\.]\s*", "", s)
+    return s
+
+
 def ensure_vocab_db() -> None:
     import sqlite3
 
@@ -330,7 +595,8 @@ def ensure_vocab_db() -> None:
             """
             CREATE TABLE IF NOT EXISTS users (
                 student TEXT PRIMARY KEY,
-                current_difficulty TEXT DEFAULT 'Easy'
+                current_difficulty TEXT DEFAULT 'Easy',
+                summary TEXT DEFAULT ''
             )
             """
         )
@@ -340,12 +606,14 @@ def ensure_vocab_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 student TEXT NOT NULL,
                 session_date TEXT NOT NULL,
+                session_time TEXT NOT NULL,
                 exercise_type TEXT NOT NULL,
                 score INTEGER NOT NULL,
                 words_mastered TEXT,
                 wrong_words TEXT,
                 feedback TEXT,
-                difficulty TEXT
+                difficulty TEXT,
+                summary TEXT
             )
             """
         )
@@ -360,9 +628,17 @@ def ensure_vocab_db() -> None:
             """
         )
         # migrations
+        user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        if "summary" not in user_cols:
+            conn.execute("ALTER TABLE users ADD COLUMN summary TEXT DEFAULT ''")
+
         cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
         if "wrong_words" not in cols:
             conn.execute("ALTER TABLE sessions ADD COLUMN wrong_words TEXT")
+        if "session_time" not in cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN session_time TEXT DEFAULT ''")
+        if "summary" not in cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN summary TEXT DEFAULT ''")
         conn.commit()
     finally:
         conn.close()
@@ -380,7 +656,7 @@ def get_current_difficulty(student: str) -> str:
         if row:
             return row[0]
         conn.execute(
-            "INSERT INTO users (student, current_difficulty) VALUES (?, ?)",
+            "INSERT INTO users (student, current_difficulty, summary) VALUES (?, ?, '')",
             (student, "Easy"),
         )
         conn.commit()
@@ -422,6 +698,7 @@ def record_session(
     feedback: List[str],
     difficulty: str,
     wrong_words: List[str],
+    summary: str,
 ) -> None:
     import sqlite3
 
@@ -430,18 +707,20 @@ def record_session(
     try:
         conn.execute(
             """
-            INSERT INTO sessions (student, session_date, exercise_type, score, words_mastered, wrong_words, feedback, difficulty)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO sessions (student, session_date, session_time, exercise_type, score, words_mastered, wrong_words, feedback, difficulty, summary)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 student,
                 date.today().isoformat(),
+                datetime.now().isoformat(timespec="seconds"),
                 exercise_type,
                 score,
                 json.dumps(words_mastered or []),
                 json.dumps(wrong_words or []),
                 json.dumps(feedback or []),
                 difficulty,
+                summary,
             ),
         )
         conn.commit()
@@ -456,7 +735,7 @@ def fetch_sessions(student: str) -> List[Tuple]:
     conn = sqlite3.connect(VOCAB_DB_PATH)
     try:
         return conn.execute(
-            "SELECT session_date, exercise_type, score, words_mastered, wrong_words, feedback, difficulty FROM sessions WHERE student = ?",
+            "SELECT session_date, session_time, exercise_type, score, words_mastered, wrong_words, feedback, difficulty, summary FROM sessions WHERE student = ? ORDER BY session_time DESC",
             (student,),
         ).fetchall()
     finally:
@@ -526,7 +805,7 @@ def fetch_wrong_words(student: str) -> List[Tuple[str, int]]:
 
 
 def generate_vocab_questions(
-    client: OpenAI, student: str, exercise_type: str, difficulty: str, retries: int = 3
+    client: OpenAI, student: str, exercise_type: str, difficulty: str, prev_summary: str, retries: int = 3
 ) -> List[Dict]:
     theme = "animals and adventures"
     prompt = (
@@ -536,6 +815,7 @@ def generate_vocab_questions(
         f" Use these base words for inspiration: {BASE_WORDS[:30]}."
         f" Theme: {theme}. Output JSON list of objects:"
         ' [{"question": str, "options": list, "answer": str, "explanation": str}].'
+        f" Previous performance summary to prioritize weaknesses: {prev_summary or 'None provided'}."
     )
     last_err = None
     attempts_log = []
@@ -638,6 +918,37 @@ def generate_vocab_questions(
     raise ValueError(f"Could not generate enough vocab exercises. Last error: {last_err}")
 
 
+def summarize_progress(
+    client: OpenAI,
+    prev_summary: str,
+    feedback: List[str],
+    mastered: List[str],
+    wrong_words: List[str],
+) -> str:
+    prompt = (
+        "Update a running summary of a student's vocab progress."
+        " Return JSON ONLY: {\"summary\": str}."
+        f" Previous summary: {prev_summary or 'None'}."
+        f" Feedback from latest session: {feedback}."
+        f" Mastered words: {mastered}."
+        f" Missed words: {wrong_words}."
+        " Keep it concise (2-4 sentences), kid-friendly, highlight improvements and next focus areas."
+    )
+    resp = client.chat.completions.create(
+        model=MODEL_NAME,
+        max_tokens=200,
+        temperature=0.3,
+        response_format={"type": "json_object"},
+        messages=[
+            {"role": "system", "content": "You are a concise, encouraging vocabulary coach."},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    content = resp.choices[0].message.content.strip()
+    parsed = json.loads(content)
+    return str(parsed.get("summary", "")).strip()
+
+
 def grade_vocab(client: OpenAI, qa_payload: List[Dict]) -> Tuple[int, List[str], List[str]]:
     prompt = (
         "Grade these vocab answers. Return JSON ONLY:"
@@ -679,7 +990,9 @@ def render_vocab_progress(student: str) -> None:
     scores = []
     table_rows = []
     all_words = []
-    for session_date, ex_type, score, words_json, wrong_json, feedback_json, difficulty in records:
+    wrong_words_all = []
+    last_summary = ""
+    for session_date, session_time, ex_type, score, words_json, wrong_json, feedback_json, difficulty, summary in records:
         dates.append(date.fromisoformat(session_date))
         scores.append(score)
         words = json.loads(words_json) if words_json else []
@@ -688,15 +1001,18 @@ def render_vocab_progress(student: str) -> None:
         for w in wrongs:
             wrong_words_all.append(w)
         feedback_list = json.loads(feedback_json) if feedback_json else []
+        last_summary = summary or last_summary
         table_rows.append(
             {
                 "Date": session_date,
+                "Time": session_time or "",
                 "Type": ex_type,
                 "Score": score,
                 "Difficulty": difficulty,
                 "Mastered": ", ".join(words[:3]) + ("..." if len(words) > 3 else ""),
                 "Missed": ", ".join(wrongs[:3]) + ("..." if len(wrongs) > 3 else ""),
                 "Feedback": "; ".join(feedback_list[:2]),
+                "Summary": (summary or "")[:120] + ("..." if summary and len(summary) > 120 else ""),
             }
         )
 
@@ -754,10 +1070,23 @@ def vocab_tab_content():
             st.error("Enter the student name first.")
             st.stop()
         current_level = get_current_difficulty(student)
+        # Fetch existing summary
+        prev_summary = ""
+        try:
+            import sqlite3
+
+            conn = sqlite3.connect(VOCAB_DB_PATH)
+            row = conn.execute("SELECT summary FROM users WHERE student = ?", (student,)).fetchone()
+            prev_summary = row[0] if row else ""
+        finally:
+            conn.close()
+
         client = get_client(api_key)
         with st.spinner(f"Generating exercises at {current_level}..."):
             try:
-                questions = generate_vocab_questions(client, student, exercise_type, current_level)
+                questions = generate_vocab_questions(
+                    client, student, exercise_type, current_level, prev_summary
+                )
             except Exception as exc:
                 st.error(f"Generation failed: {exc}")
                 st.stop()
@@ -766,6 +1095,7 @@ def vocab_tab_content():
         st.session_state["vocab_locked"] = False
         st.session_state["vocab_exercise_type"] = exercise_type
         st.session_state["vocab_level"] = current_level
+        st.session_state["vocab_prev_summary"] = prev_summary
         st.success("Exercises ready!")
         if debug_raw and "vocab_last_raw" in st.session_state:
             st.text_area("Raw vocab response", st.session_state["vocab_last_raw"], height=200)
@@ -782,7 +1112,8 @@ def vocab_tab_content():
                 options = q.get("options")
                 key = f"vocab_answer_{idx}"
                 if options and isinstance(options, list):
-                    st.radio("Choose an answer:", options, key=key, index=None, disabled=disable_inputs)
+                    safe_opts = [clean_option(o) for o in options]
+                    st.radio("Choose an answer:", safe_opts, key=key, index=None, disabled=disable_inputs)
                 else:
                     st.text_input("Your answer:", key=key, disabled=disable_inputs)
                 st.markdown("---")
@@ -833,6 +1164,12 @@ def vocab_tab_content():
             if mastered:
                 st.markdown("**Mastered words:** " + ", ".join(mastered))
 
+            prev_summary = st.session_state.get("vocab_prev_summary", "")
+            try:
+                new_summary = summarize_progress(client, prev_summary, feedback, mastered, wrong_words)
+            except Exception:
+                new_summary = prev_summary
+
             new_level = update_difficulty(student, score, total=15)
             update_wrong_words(student, wrong_words)
             record_session(
@@ -843,7 +1180,17 @@ def vocab_tab_content():
                 feedback,
                 st.session_state.get("vocab_level", "Easy"),
                 wrong_words,
+                new_summary,
             )
+            # Update summary in users
+            try:
+                import sqlite3
+
+                conn = sqlite3.connect(VOCAB_DB_PATH)
+                conn.execute("UPDATE users SET summary = ? WHERE student = ?", (new_summary, student))
+                conn.commit()
+            finally:
+                conn.close()
 
 
 if __name__ == "__main__":

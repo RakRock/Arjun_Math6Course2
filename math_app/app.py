@@ -620,20 +620,37 @@ def render_progress(student: str) -> None:
     # Filters
     all_units = sorted({u for row in df["Units"] for u in row.split(",") if u.strip().isdigit()}) if not df.empty else []
     all_modes = sorted({m for m in df["Mode"] if m})
-    f1, f2 = st.columns(2)
-    sel_units = f1.multiselect("Filter by unit", options=all_units, default=all_units)
-    sel_modes = f2.multiselect("Filter by mode", options=all_modes, default=all_modes or None)
+    if "math_unit_filter" not in st.session_state:
+        st.session_state["math_unit_filter"] = all_units
+    if "math_mode_filter" not in st.session_state:
+        st.session_state["math_mode_filter"] = all_modes
 
+    f1, f2, f3 = st.columns([1, 1, 0.7])
+    sel_units = f1.multiselect("Filter by unit", options=all_units, key="math_unit_filter")
+    sel_modes = f2.multiselect("Filter by mode", options=all_modes, key="math_mode_filter")
+
+    def clear_math_filters():
+        st.session_state["math_unit_filter"] = []
+        st.session_state["math_mode_filter"] = []
+
+    with f3:
+        st.markdown("<div style='height: 8px'></div>", unsafe_allow_html=True)
+        st.button("Reset filters", on_click=clear_math_filters)
+
+    filtered_df = df.copy()
     if sel_units:
-        df = df[df["Units"].apply(lambda x: any(u.strip() in sel_units for u in x.split(",")))]
+        filtered_df = filtered_df[filtered_df["Units"].apply(lambda x: any(u.strip() in sel_units for u in x.split(",")))]
     if sel_modes:
-        df = df[df["Mode"].isin(sel_modes)]
+        filtered_df = filtered_df[filtered_df["Mode"].isin(sel_modes)]
 
-    recent = df.head(10)
-    st.dataframe(recent, width="stretch", height=320)
-    if len(df) > len(recent):
-        with st.expander(f"Show all ({len(df)} rows)"):
-            st.dataframe(df, width="stretch", height=500)
+    if not sel_units and not sel_modes:
+        st.dataframe(filtered_df, width="stretch", height=500)
+    else:
+        recent = filtered_df.head(10)
+        st.dataframe(recent, width="stretch", height=320)
+        if len(filtered_df) > len(recent):
+            with st.expander(f"Show all ({len(filtered_df)} rows)"):
+                st.dataframe(filtered_df, width="stretch", height=500)
 
 
 def init_session_state() -> None:
