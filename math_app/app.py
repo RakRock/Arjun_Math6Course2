@@ -1,10 +1,13 @@
 import json
 import os
 import re
+import smtplib
 import sqlite3
+import ssl
 import tempfile
 from collections import Counter, defaultdict
 from datetime import date
+from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -709,6 +712,58 @@ def summarize_revision(feedback: List[str], units: List[int], max_items: int = 3
     if feedback:
         parts.append("Key notes: " + "; ".join(feedback[:max_items]))
     return " | ".join(parts)
+
+
+def send_results_email(
+    student: str,
+    units: List[int],
+    difficulty_label: str,
+    score: int,
+    qa_payload: List[Dict],
+) -> Tuple[bool, str]:
+    smtp_host = os.getenv("SMTP_HOST") or "smtp.gmail.com"
+    smtp_port = os.getenv("SMTP_PORT") or "587"
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    to_addr = os.getenv("SMTP_TO") or "rmudisoo@gmail.com"
+    if not (smtp_host and smtp_port and to_addr):
+        return False, "SMTP config missing (host/port or recipient)"
+    try:
+        smtp_port_int = int(smtp_port)
+    except ValueError:
+        return False, "SMTP_PORT is not an integer"
+
+    body_lines = [
+        f"Student: {student}",
+        f"Units: {units}",
+        f"Mode: {difficulty_label}",
+        f"Score: {score}/20",
+        "",
+        "Questions and answers:",
+    ]
+    for idx, qa in enumerate(qa_payload, start=1):
+        body_lines.append(f"{idx}. {qa.get('question','')}")
+        body_lines.append(f"Your answer: {qa.get('user_answer','')}")
+        body_lines.append(f"Correct answer: {qa.get('correct_answer','')}")
+        expl = qa.get("explanation", "")
+        if expl:
+            body_lines.append(f"Why: {expl}")
+        body_lines.append("")
+    msg = MIMEText("\n".join(body_lines))
+    msg["Subject"] = f"Math Quiz Results - {student} - {date.today().isoformat()}"
+    msg["From"] = smtp_user or to_addr
+    msg["To"] = to_addr
+
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port_int) as server:
+            server.starttls(context=context)
+            if smtp_user and smtp_pass:
+                server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        return True, "Email sent"
+    except Exception as exc:
+        return False, f"Email send failed: {exc}"
     st.session_state.setdefault("answers_submitted", False)
 
 
@@ -928,6 +983,15 @@ def main() -> None:
                 difficulty_code,
                 revision,
             )
+            # Email results if SMTP is configured
+            email_ok, email_msg = send_results_email(
+                student_name, selected_units, difficulty_label, score, qa_payload
+            )
+            if email_msg:
+                if email_ok:
+                    st.info(email_msg)
+                else:
+                    st.warning(email_msg)
             st.session_state["answers_submitted"] = True
             st.session_state["quiz_locked"] = True
         elif disable_inputs:

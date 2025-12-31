@@ -2,8 +2,11 @@ import json
 import os
 import random
 import re
+import smtplib
+import ssl
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -981,6 +984,58 @@ def grade_vocab(client: OpenAI, qa_payload: List[Dict]) -> Tuple[int, List[str],
     return score, [str(f) for f in feedback], [str(w) for w in mastered]
 
 
+def send_results_email(
+    student: str,
+    exercise_type: str,
+    difficulty: str,
+    score: int,
+    qa_payload: List[Dict],
+) -> Tuple[bool, str]:
+    smtp_host = os.getenv("SMTP_HOST") or "smtp.gmail.com"
+    smtp_port = os.getenv("SMTP_PORT") or "587"
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    to_addr = os.getenv("SMTP_TO") or "rmudisoo@gmail.com"
+    if not (smtp_host and smtp_port and to_addr):
+        return False, "SMTP config missing (host/port or recipient)"
+    try:
+        smtp_port_int = int(smtp_port)
+    except ValueError:
+        return False, "SMTP_PORT is not an integer"
+
+    body_lines = [
+        f"Student: {student}",
+        f"Type: {exercise_type}",
+        f"Difficulty: {difficulty}",
+        f"Score: {score}/15",
+        "",
+        "Questions and answers:",
+    ]
+    for idx, qa in enumerate(qa_payload, start=1):
+        body_lines.append(f"{idx}. {qa.get('question','')}")
+        body_lines.append(f"Your answer: {qa.get('user_answer','')}")
+        body_lines.append(f"Correct answer: {qa.get('correct_answer','')}")
+        expl = qa.get("explanation", "")
+        if expl:
+            body_lines.append(f"Why: {expl}")
+        body_lines.append("")
+    msg = MIMEText("\n".join(body_lines))
+    msg["Subject"] = f"Vocab Quiz Results - {student} - {date.today().isoformat()}"
+    msg["From"] = smtp_user or to_addr
+    msg["To"] = to_addr
+
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP(smtp_host, smtp_port_int) as server:
+            server.starttls(context=context)
+            if smtp_user and smtp_pass:
+                server.login(smtp_user, smtp_pass)
+            server.send_message(msg)
+        return True, "Email sent"
+    except Exception as exc:
+        return False, f"Email send failed: {exc}"
+
+
 def render_vocab_progress(student: str) -> None:
     records = fetch_sessions(student)
     if not records:
@@ -1191,6 +1246,27 @@ def vocab_tab_content():
                 conn.commit()
             finally:
                 conn.close()
+
+            email_ok, email_msg = send_results_email(
+                student,
+                exercise_type,
+                st.session_state.get("vocab_level", "Easy"),
+                score,
+                qa_payload,
+            )
+            if email_msg:
+                if email_ok:
+                    st.info(email_msg)
+                else:
+                    st.warning(email_msg)
+
+            st.info(f"Current difficulty updated to: {new_level}")
+            st.session_state["vocab_locked"] = True
+
+            # Clear answers to prevent resubmit
+            for key in list(st.session_state.keys()):
+                if key.startswith("vocab_answer_"):
+                    del st.session_state[key]
 
 
 if __name__ == "__main__":
