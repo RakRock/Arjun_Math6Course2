@@ -4,6 +4,7 @@ import streamlit as st
 from math_app import app as math_app
 from vocab_app import vocab_app
 from math_unit_app import math_unit
+from quiz_app import quiz_app
 from speech_app import speech_app
 
 
@@ -31,8 +32,8 @@ def main():
     except Exception:
         pass
 
-    math_tab, vocab_tab, unit_tab, speech_tab = st.tabs(
-        ["Math", "Vocab Builder", "Math Unit", "Speech"]
+    math_tab, vocab_tab, unit_tab, speech_tab, quiz_tab = st.tabs(
+        ["Math", "Vocab Builder", "Math Unit", "Speech", "Quiz"]
     )
 
     with math_tab:
@@ -46,6 +47,9 @@ def main():
 
     with speech_tab:
         _run_without_page_config(speech_app.main)
+
+    with quiz_tab:
+        _run_without_page_config(quiz_app.main)
 
 
 if __name__ == "__main__":

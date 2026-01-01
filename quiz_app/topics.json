@@ -1,0 +1,44 @@
+{
+  "Nature and Animals": [
+    "Animals",
+    "Ocean Life",
+    "Birds",
+    "Insects",
+    "Dinosaurs",
+    "Pets"
+  ],
+  "Science and Discovery": [
+    "Human Body",
+    "Weather",
+    "Space",
+    "Plants",
+    "Simple Machines",
+    "Electricity"
+  ],
+  "World and Geography": [
+    "Continents and Countries",
+    "Famous Landmarks",
+    "Oceans and Rivers",
+    "Maps and Directions",
+    "Cultures",
+    "Environment"
+  ],
+  "History and People": [
+    "Famous Inventors",
+    "Ancient Worlds",
+    "Explorers",
+    "Holidays and Events",
+    "Famous Leaders",
+    "Transportation History"
+  ],
+  "Fun and Everyday Knowledge": [
+    "Sports and Games",
+    "Food and Nutrition",
+    "Books and Stories",
+    "Music and Instruments",
+    "Colors and Shapes",
+    "Numbers and Puzzles",
+    "Myths and Legends"
+  ]
+}
+
