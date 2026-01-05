@@ -5,8 +5,9 @@ import smtplib
 import sqlite3
 import ssl
 import tempfile
+from io import StringIO
 from collections import Counter, defaultdict
-from datetime import date
+from datetime import date, datetime
 from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -20,8 +21,10 @@ from streamlit_autorefresh import st_autorefresh
 
 
 BASE_DIR = Path(__file__).resolve().parent
+DB_DIR = Path(os.getenv("DB_DIR", BASE_DIR))
+DB_DIR.mkdir(parents=True, exist_ok=True)
 UNITS_DATA_PATH = BASE_DIR / "units_data.json"
-PROGRESS_DB_PATH = BASE_DIR / "progress.db"
+PROGRESS_DB_PATH = DB_DIR / "progress.db"
 MODEL_NAME = "grok-4-fast"
 API_BASE_URL = "https://api.x.ai/v1"
 PDF_FOLDER = BASE_DIR / "pdf_units"
@@ -224,13 +227,16 @@ def generate_questions(
         max_tokens=2000,
         temperature=0.2,
         response_format={"type": "json_object"},
+        timeout=90,
         messages=[
             {"role": "system", "content": "You are a helpful math quiz generator."},
             {"role": "user", "content": prompt},
         ],
     )
-    content = response.choices[0].message.content.strip()
+    content = (response.choices[0].message.content or "").strip()
     st.session_state["last_quiz_raw"] = content
+    if not content:
+        raise ValueError("Quiz generation returned an empty response.")
     try:
         parsed = _parse_json_safely(content)
         questions = _coerce_questions(parsed)
@@ -391,15 +397,21 @@ def grade_quiz(client: OpenAI, qa_payload: List[Dict]) -> Tuple[int, List[str]]:
         max_tokens=500,
         temperature=0.2,
         response_format={"type": "json_object"},
+        timeout=60,
         messages=[
             {"role": "system", "content": "You are a concise and fair math grader."},
             {"role": "user", "content": prompt},
         ],
     )
-    content = response.choices[0].message.content.strip()
+    content = (response.choices[0].message.content or "").strip()
+    st.session_state["last_grading_raw"] = content
+    if not content:
+        st.session_state["last_grading_error"] = "Grading returned an empty response."
+        raise ValueError("Grading returned an empty response.")
     try:
         result = _parse_json_safely(content)
     except json.JSONDecodeError as exc:
+        st.session_state["last_grading_error"] = f"JSON parse error: {exc}"
         raise ValueError(f"Could not parse grading JSON. Details: {exc}") from exc
 
     score = int(result.get("score", 0))
@@ -422,17 +434,38 @@ def ensure_db() -> None:
                 score INTEGER NOT NULL,
                 details TEXT,
                 difficulty TEXT,
-                revision TEXT
+                revision TEXT,
+                start_time TEXT,
+                end_time TEXT
             )
             """
         )
-        # Lightweight migration: add difficulty column if missing
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS quiz_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                quiz_id INTEGER NOT NULL,
+                question TEXT,
+                options TEXT,
+                correct_answer TEXT,
+                user_answer TEXT,
+                is_correct INTEGER,
+                explanation TEXT,
+                FOREIGN KEY (quiz_id) REFERENCES quizzes(id)
+            )
+            """
+        )
+        # Lightweight migration: add missing columns if needed
         cols = {row[1] for row in conn.execute("PRAGMA table_info(quizzes)")}
         if "difficulty" not in cols:
             conn.execute("ALTER TABLE quizzes ADD COLUMN difficulty TEXT")
             cols.add("difficulty")
         if "revision" not in cols:
             conn.execute("ALTER TABLE quizzes ADD COLUMN revision TEXT")
+        if "start_time" not in cols:
+            conn.execute("ALTER TABLE quizzes ADD COLUMN start_time TEXT")
+        if "end_time" not in cols:
+            conn.execute("ALTER TABLE quizzes ADD COLUMN end_time TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -445,15 +478,18 @@ def save_quiz_result(
     feedback: List[str],
     difficulty: str,
     revision: str,
+    start_time: str,
+    end_time: str,
+    qa_payload: List[Dict],
 ) -> None:
     ensure_db()
     conn = sqlite3.connect(PROGRESS_DB_PATH)
     try:
         units_str = ",".join(str(u) for u in sorted(units))
-        conn.execute(
+        cur = conn.execute(
             """
-            INSERT INTO quizzes (student, quiz_date, units, score, details, difficulty, revision)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO quizzes (student, quiz_date, units, score, details, difficulty, revision, start_time, end_time)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 student,
@@ -463,8 +499,33 @@ def save_quiz_result(
                 json.dumps(feedback),
                 difficulty,
                 revision,
+                start_time,
+                end_time,
             ),
         )
+        quiz_id = cur.lastrowid
+        # Store per-question details and correctness
+        for item in qa_payload:
+            user_ans = item.get("user_answer", "")
+            correct_ans = item.get("correct_answer", "")
+            is_correct = None
+            if correct_ans:
+                is_correct = int(str(user_ans).strip().lower() == str(correct_ans).strip().lower())
+            conn.execute(
+                """
+                INSERT INTO quiz_questions (quiz_id, question, options, correct_answer, user_answer, is_correct, explanation)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    quiz_id,
+                    item.get("question", ""),
+                    json.dumps(item.get("options")) if item.get("options") is not None else None,
+                    correct_ans,
+                    user_ans,
+                    is_correct,
+                    item.get("explanation", ""),
+                ),
+            )
         conn.commit()
     finally:
         conn.close()
@@ -476,10 +537,52 @@ def fetch_progress(student: str) -> List[Tuple[str, int, str]]:
     conn = sqlite3.connect(PROGRESS_DB_PATH)
     try:
         cursor = conn.execute(
-            "SELECT units, score, quiz_date, details, difficulty, revision FROM quizzes WHERE student = ?",
+            "SELECT id, units, score, quiz_date, details, difficulty, revision, start_time, end_time FROM quizzes WHERE student = ?",
             (student,),
         )
         return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def fetch_quiz_questions(quiz_id: int) -> List[Dict]:
+    """Return stored questions/answers for a quiz."""
+    try:
+        quiz_id_int = int(quiz_id)
+    except Exception:
+        return []
+    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    try:
+        cursor = conn.execute(
+            """
+            SELECT question, options, correct_answer, user_answer, is_correct, explanation
+            FROM quiz_questions
+            WHERE quiz_id = ?
+            ORDER BY id ASC
+            """,
+            (quiz_id_int,),
+        )
+        rows = cursor.fetchall()
+        result: List[Dict] = []
+        for row in rows:
+            q_text, opts_json, correct, user, is_correct, expl = row
+            opts = None
+            if opts_json:
+                try:
+                    opts = json.loads(opts_json)
+                except Exception:
+                    opts = opts_json
+            result.append(
+                {
+                    "question": q_text or "",
+                    "options": opts,
+                    "correct_answer": correct or "",
+                    "user_answer": user or "",
+                    "is_correct": bool(is_correct) if is_correct is not None else None,
+                    "explanation": expl or "",
+                }
+            )
+        return result
     finally:
         conn.close()
 
@@ -502,17 +605,30 @@ def render_progress(student: str) -> None:
     all_quizzes_count = len(records)
     last_score = records[-1][1] if records else None
 
-    for units_str, score, quiz_day, details_json, difficulty, revision in records:
+    for (
+        quiz_id,
+        units_str,
+        score,
+        quiz_day,
+        details_json,
+        difficulty,
+        revision,
+        start_time,
+        end_time,
+    ) in records:
         quiz_day = quiz_day or ""
         diff_label = difficulty or ""
         table_rows.append(
             {
+                "Quiz ID": quiz_id,
                 "Date": quiz_day,
                 "Units": units_str,
                 "Score": score,
                 "Mode": difficulty_labels_inv.get(diff_label, diff_label),
                 "Needs Revision": revision or "",
                 "Feedback": ", ".join(json.loads(details_json)[:2]) if details_json else "",
+                "Start Time": start_time or "",
+                "End Time": end_time or "",
             }
         )
         if quiz_day not in daily:
@@ -529,80 +645,6 @@ def render_progress(student: str) -> None:
                 unit_int = int(unit)
                 unit_scores[unit_int].append(score)
                 daily[quiz_day]["units"].add(unit_int)
-
-    if not daily:
-        st.info("No quizzes yet.")
-        return
-
-    # Build heatmap data for last 365 days (or available range)
-    today = date.today()
-    dates = [date.fromisoformat(d) for d in daily.keys() if d]
-    if not dates:
-        st.info("No quizzes yet.")
-        return
-    min_date = min(dates, default=today)
-    start_date = max(min_date, today.replace(year=today.year - 1))
-
-    all_days = pd.date_range(start=start_date, end=today, freq="D")
-    heat_rows = []
-    for day in all_days:
-        day_str = day.date().isoformat()
-        meta = daily.get(day_str, {"count": 0, "units": set(), "score_sum": 0})
-        count = meta["count"]
-        units_list = sorted(meta["units"]) if meta["units"] else []
-        skills = sorted(
-            {skill for u in units_list for skill in UNIT_SKILL_MAP.get(u, [])}
-        )
-        tooltip = (
-            f"Date: {day_str}<br>"
-            f"Quizzes: {count}<br>"
-            f"Units: {units_list}<br>"
-            f"Total Score: {meta['score_sum']}/20 per quiz<br>"
-            f"Skills: {skills or '—'}"
-        )
-        week = (day.date() - start_date).days // 7
-        heat_rows.append(
-            {
-                "week": week,
-                "weekday": day.day_name(),
-                "count": count,
-                "tooltip": tooltip,
-            }
-        )
-
-    heat_df = pd.DataFrame(heat_rows)
-    # Order weekdays to mimic GitHub style (Sunday on top)
-    weekday_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-    heat_df["weekday"] = pd.Categorical(heat_df["weekday"], categories=weekday_order, ordered=True)
-
-    fig = px.density_heatmap(
-        heat_df,
-        x="week",
-        y="weekday",
-        z="count",
-        color_continuous_scale="Greens",
-        hover_data={"tooltip": True},
-    )
-    fig.update_traces(hovertemplate="%{customdata}")
-    fig.update_layout(
-        title="Quiz Activity (last 365 days or available dates)",
-        xaxis_title="Week",
-        yaxis_title="Day of Week",
-        coloraxis_colorbar=dict(title="Quizzes"),
-        margin=dict(l=40, r=20, t=50, b=40),
-    )
-    fig.update_traces(customdata=heat_df["tooltip"])
-
-    st.subheader("Progress Dashboard")
-    st.caption("Activity heatmap (darker = more quizzes that day)")
-    st.plotly_chart(fig, width="stretch")
-
-    # Summary metrics
-    quiz_days = {d for d in daily.keys() if d}
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Unique Days", len(quiz_days))
-    col2.metric("Total Quizzes", all_quizzes_count)
-    col3.metric("Last Score", f"{last_score}/20" if last_score is not None else "—")
 
     st.divider()
     st.subheader("Unit Averages")
@@ -656,14 +698,69 @@ def render_progress(student: str) -> None:
             with st.expander(f"Show all ({len(filtered_df)} rows)"):
                 st.dataframe(filtered_df, width="stretch", height=500)
 
+    # Download history CSV (filtered view)
+    if not filtered_df.empty:
+        hist_buf = StringIO()
+        filtered_df.to_csv(hist_buf, index=False)
+        st.download_button(
+            "Download quiz history (CSV)",
+            data=hist_buf.getvalue(),
+            file_name="quiz_history.csv",
+            mime="text/csv",
+        )
+
+    # Detailed question/answer dump per quiz
+    st.subheader("Quiz Details")
+    if filtered_df.empty:
+        st.info("No quizzes to show.")
+        return
+    for _, row in filtered_df.iterrows():
+        quiz_id = row.get("Quiz ID")
+        if quiz_id is None or (isinstance(quiz_id, float) and pd.isna(quiz_id)):
+            continue
+        label = f"{row.get('Date', '')} • Units {row.get('Units', '')} • {row.get('Score', '')}/20 • {row.get('Mode', '')}"
+        with st.expander(label):
+            questions = fetch_quiz_questions(int(quiz_id))
+            if not questions:
+                st.write("No stored questions for this quiz.")
+            else:
+                qa_buf = StringIO()
+                qa_df = pd.DataFrame(questions)
+                qa_df.to_csv(qa_buf, index=False)
+                st.download_button(
+                    f"Download quiz {quiz_id} Q&A (CSV)",
+                    data=qa_buf.getvalue(),
+                    file_name=f"quiz_{quiz_id}_qa.csv",
+                    mime="text/csv",
+                )
+                for idx, q in enumerate(questions, start=1):
+                    st.markdown(f"**Q{idx}.** {escape_markdown(clean_question_text(q.get('question',''), bool(q.get('options'))))}")
+                    opts = q.get("options")
+                    if opts and isinstance(opts, list):
+                        st.write("Options:")
+                        st.write(", ".join(escape_markdown(o) for o in opts))
+                    st.write(f"Your answer: {escape_markdown(q.get('user_answer',''))}")
+                    st.write(f"Correct answer: {escape_markdown(q.get('correct_answer',''))}")
+                    ic = q.get("is_correct")
+                    if ic is True:
+                        st.success("Marked correct")
+                    elif ic is False:
+                        st.error("Marked incorrect")
+                    if q.get("explanation"):
+                        st.write(f"Why: {escape_markdown(q.get('explanation',''))}")
+                    st.markdown("---")
+
 
 def init_session_state() -> None:
     st.session_state.setdefault("questions", [])
     st.session_state.setdefault("selected_units", [])
     st.session_state.setdefault("last_quiz_raw", "")
     st.session_state.setdefault("last_quiz_error", "")
+    st.session_state.setdefault("last_grading_raw", "")
+    st.session_state.setdefault("last_grading_error", "")
     st.session_state.setdefault("quiz_locked", False)
     st.session_state.setdefault("show_progress", False)
+    st.session_state.setdefault("math_mode", "none")  # none | quiz | progress
 
 
 def reset_quiz_state(clear_questions: bool = True) -> None:
@@ -683,6 +780,11 @@ def escape_markdown(text: str) -> str:
     if text is None:
         return ""
     return re.sub(r"([\\`*_{}\[\]()#+\-.!|>$])", r"\\\1", str(text))
+
+
+def format_elapsed(_: str) -> str:
+    """Compat stub for older timer code paths; returns a neutral timer string."""
+    return "00:00"
 
 
 def clean_question_text(text: str, has_options: bool) -> str:
@@ -775,6 +877,7 @@ def reset_quiz_state(clear_questions: bool = True) -> None:
     st.session_state["quiz_locked"] = False
     st.session_state["answers_submitted"] = False
     st.session_state["last_quiz_error"] = ""
+    st.session_state["quiz_start_time"] = None
     # Clear any stored answers
     for key in list(st.session_state.keys()):
         if key.startswith("answer_"):
@@ -783,8 +886,8 @@ def reset_quiz_state(clear_questions: bool = True) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="6th Grade Springboard Course 2 Quiz Generator")
-    # Keep-alive to prevent long-idle disconnects (every 4 minutes)
-    st_autorefresh(interval=240_000, key="keepalive_math")
+    # Keep-alive to prevent long-idle disconnects (ping every 60 seconds)
+    st_autorefresh(interval=60_000, key="keepalive_math")
     init_session_state()
     ensure_db()
     ensure_pdf_folder()
@@ -802,10 +905,58 @@ def main() -> None:
     debug_raw = st.checkbox("Show raw quiz response (debug)", value=False)
     st.session_state["last_quiz_error"] = ""
 
-    if st.button("Start New Quiz"):
-        reset_quiz_state(clear_questions=True)
-        st.success("Quiz state cleared. Select units and generate a new quiz.")
+    if st.button("Show last session logs"):
+        st.subheader("Last session logs")
+        st.write(f"Last quiz error: {st.session_state.get('last_quiz_error') or 'None'}")
+        st.write(f"Last grading error: {st.session_state.get('last_grading_error') or 'None'}")
+        st.text_area(
+            "Last raw quiz response",
+            st.session_state.get("last_quiz_raw", ""),
+            height=200,
+        )
+        st.text_area(
+            "Last raw grading response",
+            st.session_state.get("last_grading_raw", ""),
+            height=200,
+        )
 
+    # Action chooser
+    st.subheader("Choose an action")
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("Start New Quiz"):
+            if not student_name:
+                st.warning("Enter the student name to start a quiz.")
+            else:
+                st.session_state["math_mode"] = "quiz"
+                st.session_state["show_progress"] = False
+                reset_quiz_state(clear_questions=True)
+                st.success("Quiz state cleared. Select units and generate a new quiz.")
+    with col_b:
+        if st.button("View Progress"):
+            if not student_name:
+                st.warning("Enter the student name to view progress.")
+            else:
+                st.session_state["math_mode"] = "progress"
+                st.session_state["show_progress"] = True
+
+    # If no action chosen yet, stop after showing the chooser
+    if st.session_state.get("math_mode") == "none":
+        return
+
+    # Progress view
+    if st.session_state.get("math_mode") == "progress":
+        st.subheader("Progress")
+        if student_name:
+            render_progress(student_name)
+        else:
+            st.warning("Enter the student name to view progress.")
+        if st.button("Back"):
+            st.session_state["show_progress"] = False
+            st.session_state["math_mode"] = "none"
+        return
+
+    # Quiz view below
     st.info(
         f"Copy Springboard Course 2 PDFs into the folder: {PDF_FOLDER} "
         "and click Refresh to load/update keyword data."
@@ -835,26 +986,11 @@ def main() -> None:
     )
     difficulty = difficulty_labels[difficulty_label]
 
-    if st.sidebar.button("View Progress"):
-        if student_name:
-            st.session_state["show_progress"] = True
-        else:
-            st.sidebar.warning("Enter the student name to view progress.")
-
-    if st.session_state.get("show_progress"):
-        st.subheader("Progress")
-        if student_name:
-            render_progress(student_name)
-        else:
-            st.warning("Enter the student name to view progress.")
-        if st.button("Back to Quiz"):
-            st.session_state["show_progress"] = False
-        return
-
     if st.button("Generate Quiz"):
         generation_error = None
         # Starting a new quiz unlocks submission and clears previous answers
         reset_quiz_state(clear_questions=False)
+        st.session_state["quiz_start_time"] = datetime.now().isoformat(timespec="seconds")
         if not student_name:
             generation_error = "Please enter the student name before generating a quiz."
         if not selected_units:
@@ -897,9 +1033,19 @@ def main() -> None:
 
     if st.session_state.get("last_quiz_error"):
         st.error(st.session_state["last_quiz_error"])
-
-    if debug_raw and st.session_state.get("last_quiz_raw"):
-        st.text_area("Last raw quiz response", st.session_state["last_quiz_raw"], height=200)
+    if debug_raw:
+        st.text_area(
+            "Last raw quiz response",
+            st.session_state.get("last_quiz_raw", ""),
+            height=200,
+        )
+        st.text_area(
+            "Last raw grading response",
+            st.session_state.get("last_grading_raw", ""),
+            height=200,
+        )
+        if st.session_state.get("last_grading_error"):
+            st.write(f"Last grading error: {st.session_state['last_grading_error']}")
 
     questions = st.session_state.get("questions", [])
     if questions:
@@ -954,6 +1100,7 @@ def main() -> None:
                 qa_payload.append(
                     {
                         "question": q.get("question", ""),
+                        "options": q.get("options"),
                         "user_answer": user_answer,
                         "correct_answer": q.get("answer", ""),
                         "explanation": q.get("explanation", ""),
@@ -964,6 +1111,7 @@ def main() -> None:
                 try:
                     score, feedback = grade_quiz(client, qa_payload)
                 except Exception as exc:
+                    st.session_state["last_grading_error"] = str(exc)
                     st.error(f"Grading failed: {exc}")
                     return
 
@@ -978,6 +1126,8 @@ def main() -> None:
             # Map label back to internal difficulty code
             difficulty_code = difficulty
             revision = summarize_revision(feedback, selected_units, max_items=3)
+            start_ts = st.session_state.get("quiz_start_time") or datetime.now().isoformat(timespec="seconds")
+            end_ts = datetime.now().isoformat(timespec="seconds")
             save_quiz_result(
                 student_name,
                 selected_units,
@@ -985,6 +1135,9 @@ def main() -> None:
                 feedback,
                 difficulty_code,
                 revision,
+                start_ts,
+                end_ts,
+                qa_payload,
             )
             # Email results if SMTP is configured
             email_ok, email_msg = send_results_email(

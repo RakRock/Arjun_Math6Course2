@@ -11,8 +11,10 @@ from openai import OpenAI
 from streamlit_autorefresh import st_autorefresh
 
 BASE_DIR = Path(__file__).resolve().parent
+DB_DIR = Path(os.getenv("DB_DIR", BASE_DIR))
+DB_DIR.mkdir(parents=True, exist_ok=True)
 TOPICS_JSON = BASE_DIR / "topics.json"
-QUIZ_DB_PATH = BASE_DIR / "quiz_progress.db"
+QUIZ_DB_PATH = DB_DIR / "quiz_progress.db"
 MODEL_NAME = "grok-4-fast"
 API_BASE_URL = "https://api.x.ai/v1"
 
