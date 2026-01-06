@@ -8,9 +8,7 @@ __pycache__/
 # Streamlit temp
 .streamlit/
 
-# Local databases
-math_app/progress.db
-vocab_app/vocab_progress.db
+# Local data
 math_unit_app/math_unit_concepts.json
 math_unit_app/math-unit-pdf/
 math_app/pdf_units/

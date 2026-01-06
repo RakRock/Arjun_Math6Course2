@@ -16,8 +16,17 @@ from openai import OpenAI
 from streamlit_autorefresh import st_autorefresh
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_DIR = Path(os.getenv("DB_DIR", BASE_DIR))
-DB_DIR.mkdir(parents=True, exist_ok=True)
+db_dir_env = os.getenv("DB_DIR")
+if db_dir_env:
+    DB_DIR = Path(db_dir_env)
+    try:
+        DB_DIR.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        DB_DIR = BASE_DIR / ".data"
+        DB_DIR.mkdir(parents=True, exist_ok=True)
+else:
+    DB_DIR = BASE_DIR / ".data"
+    DB_DIR.mkdir(parents=True, exist_ok=True)
 VOCAB_DB_PATH = DB_DIR / "vocab_progress.db"
 MODEL_NAME = "grok-4-fast"
 API_BASE_URL = "https://api.x.ai/v1"

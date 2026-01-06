@@ -17,14 +17,28 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 from openai import OpenAI
+import psycopg
 from streamlit_autorefresh import st_autorefresh
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_DIR = Path(os.getenv("DB_DIR", BASE_DIR))
-DB_DIR.mkdir(parents=True, exist_ok=True)
+DATABASE_URL = os.getenv("DATABASE_URL")
+db_dir_env = os.getenv("DB_DIR")
+if DATABASE_URL:
+    DB_DIR = None
+else:
+    if db_dir_env:
+        DB_DIR = Path(db_dir_env)
+        try:
+            DB_DIR.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            DB_DIR = BASE_DIR / ".data"
+            DB_DIR.mkdir(parents=True, exist_ok=True)
+    else:
+        DB_DIR = BASE_DIR / ".data"
+        DB_DIR.mkdir(parents=True, exist_ok=True)
 UNITS_DATA_PATH = BASE_DIR / "units_data.json"
-PROGRESS_DB_PATH = DB_DIR / "progress.db"
+PROGRESS_DB_PATH = DB_DIR / "progress.db" if DB_DIR else None
 MODEL_NAME = "grok-4-fast"
 API_BASE_URL = "https://api.x.ai/v1"
 PDF_FOLDER = BASE_DIR / "pdf_units"
@@ -421,13 +435,29 @@ def grade_quiz(client: OpenAI, qa_payload: List[Dict]) -> Tuple[int, List[str]]:
     return score, [str(item) for item in feedback]
 
 
+def get_conn():
+    """Return a DB connection to Postgres if DATABASE_URL is set, else SQLite."""
+    if DATABASE_URL:
+        return psycopg.connect(DATABASE_URL, sslmode="require", connect_timeout=30)
+    return sqlite3.connect(PROGRESS_DB_PATH)
+
+
+def adapt_sql(sql: str) -> str:
+    """Convert %s placeholders to ? when using SQLite."""
+    if DATABASE_URL:
+        return sql
+    return sql.replace("%s", "?")
+
+
 def ensure_db() -> None:
-    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    conn = get_conn()
     try:
-        conn.execute(
+        cur = conn.cursor()
+        # Use SERIAL-like behavior in Postgres; INTEGER PRIMARY KEY AUTOINCREMENT in SQLite is fine
+        cur.execute(
             """
             CREATE TABLE IF NOT EXISTS quizzes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 student TEXT NOT NULL,
                 quiz_date TEXT NOT NULL,
                 units TEXT NOT NULL,
@@ -440,10 +470,10 @@ def ensure_db() -> None:
             )
             """
         )
-        conn.execute(
+        cur.execute(
             """
             CREATE TABLE IF NOT EXISTS quiz_questions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id SERIAL PRIMARY KEY,
                 quiz_id INTEGER NOT NULL,
                 question TEXT,
                 options TEXT,
@@ -455,17 +485,18 @@ def ensure_db() -> None:
             )
             """
         )
-        # Lightweight migration: add missing columns if needed
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(quizzes)")}
-        if "difficulty" not in cols:
-            conn.execute("ALTER TABLE quizzes ADD COLUMN difficulty TEXT")
-            cols.add("difficulty")
-        if "revision" not in cols:
-            conn.execute("ALTER TABLE quizzes ADD COLUMN revision TEXT")
-        if "start_time" not in cols:
-            conn.execute("ALTER TABLE quizzes ADD COLUMN start_time TEXT")
-        if "end_time" not in cols:
-            conn.execute("ALTER TABLE quizzes ADD COLUMN end_time TEXT")
+        # Lightweight migration for SQLite only
+        if not DATABASE_URL:
+            cols = {row[1] for row in cur.execute("PRAGMA table_info(quizzes)")}
+            if "difficulty" not in cols:
+                cur.execute("ALTER TABLE quizzes ADD COLUMN difficulty TEXT")
+                cols.add("difficulty")
+            if "revision" not in cols:
+                cur.execute("ALTER TABLE quizzes ADD COLUMN revision TEXT")
+            if "start_time" not in cols:
+                cur.execute("ALTER TABLE quizzes ADD COLUMN start_time TEXT")
+            if "end_time" not in cols:
+                cur.execute("ALTER TABLE quizzes ADD COLUMN end_time TEXT")
         conn.commit()
     finally:
         conn.close()
@@ -483,14 +514,18 @@ def save_quiz_result(
     qa_payload: List[Dict],
 ) -> None:
     ensure_db()
-    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    conn = get_conn()
     try:
+        cur = conn.cursor()
         units_str = ",".join(str(u) for u in sorted(units))
-        cur = conn.execute(
-            """
+        insert_sql = """
             INSERT INTO quizzes (student, quiz_date, units, score, details, difficulty, revision, start_time, end_time)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        if DATABASE_URL:
+            insert_sql += " RETURNING id"
+        cur.execute(
+            adapt_sql(insert_sql),
             (
                 student,
                 date.today().isoformat(),
@@ -503,7 +538,10 @@ def save_quiz_result(
                 end_time,
             ),
         )
-        quiz_id = cur.lastrowid
+        if DATABASE_URL:
+            quiz_id = cur.fetchone()[0]
+        else:
+            quiz_id = cur.lastrowid
         # Store per-question details and correctness
         for item in qa_payload:
             user_ans = item.get("user_answer", "")
@@ -511,11 +549,13 @@ def save_quiz_result(
             is_correct = None
             if correct_ans:
                 is_correct = int(str(user_ans).strip().lower() == str(correct_ans).strip().lower())
-            conn.execute(
-                """
-                INSERT INTO quiz_questions (quiz_id, question, options, correct_answer, user_answer, is_correct, explanation)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
+            cur.execute(
+                adapt_sql(
+                    """
+                    INSERT INTO quiz_questions (quiz_id, question, options, correct_answer, user_answer, is_correct, explanation)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """
+                ),
                 (
                     quiz_id,
                     item.get("question", ""),
@@ -532,15 +572,18 @@ def save_quiz_result(
 
 
 def fetch_progress(student: str) -> List[Tuple[str, int, str]]:
-    if not PROGRESS_DB_PATH.exists():
+    if not DATABASE_URL and PROGRESS_DB_PATH and not PROGRESS_DB_PATH.exists():
         return []
-    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    conn = get_conn()
     try:
-        cursor = conn.execute(
-            "SELECT id, units, score, quiz_date, details, difficulty, revision, start_time, end_time FROM quizzes WHERE student = ?",
+        cur = conn.cursor()
+        cur.execute(
+            adapt_sql(
+                "SELECT id, units, score, quiz_date, details, difficulty, revision, start_time, end_time FROM quizzes WHERE student = %s"
+            ),
             (student,),
         )
-        return cursor.fetchall()
+        return cur.fetchall()
     finally:
         conn.close()
 
@@ -551,18 +594,21 @@ def fetch_quiz_questions(quiz_id: int) -> List[Dict]:
         quiz_id_int = int(quiz_id)
     except Exception:
         return []
-    conn = sqlite3.connect(PROGRESS_DB_PATH)
+    conn = get_conn()
     try:
-        cursor = conn.execute(
-            """
-            SELECT question, options, correct_answer, user_answer, is_correct, explanation
-            FROM quiz_questions
-            WHERE quiz_id = ?
-            ORDER BY id ASC
-            """,
+        cur = conn.cursor()
+        cur.execute(
+            adapt_sql(
+                """
+                SELECT question, options, correct_answer, user_answer, is_correct, explanation
+                FROM quiz_questions
+                WHERE quiz_id = %s
+                ORDER BY id ASC
+                """
+            ),
             (quiz_id_int,),
         )
-        rows = cursor.fetchall()
+        rows = cur.fetchall()
         result: List[Dict] = []
         for row in rows:
             q_text, opts_json, correct, user, is_correct, expl = row
