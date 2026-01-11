@@ -17,6 +17,12 @@ def _run_without_page_config(fn):
 
 
 def main():
+    # Lightweight health endpoint for uptime checks (e.g., cron ping)
+    params = st.experimental_get_query_params()
+    if "health" in params:
+        st.write("ok")
+        return
+
     st.set_page_config(page_title="Learning Hub")
     st.title("Learning Hub")
 
