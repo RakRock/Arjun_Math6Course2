@@ -290,6 +290,159 @@ def generate_questions(
     return cleaned_questions
 
 
+def generate_boss_set(client: OpenAI, unit: int) -> List[Dict]:
+    prompt = (
+        "Generate 20 challenging 'Boss Battle' questions for 6th-grade Springboard Course 2 math."
+        f" Unit: {unit}. Difficulty: complex. Each question must include the correct answer and explanation."
+        " Format: JSON ONLY as an object: {\"questions\": [{\"question\": str, \"options\": list or null, \"answer\": str, \"explanation\": str}, ...exactly 20 items...]}"
+        " Mix multiple-choice and short-answer. Use kid-friendly but rigorous wording. No extra text."
+        " No trailing commas. Exactly 20 items."
+    )
+    response = client.chat.completions.create(
+        model=MODEL_NAME,
+        max_tokens=2400,
+        temperature=0.3,
+        response_format={"type": "json_object"},
+        timeout=90,
+        messages=[
+            {"role": "system", "content": "You are a precise math item writer."},
+            {"role": "user", "content": prompt},
+        ],
+    )
+    content = (response.choices[0].message.content or "").strip()
+    st.session_state["last_quiz_raw"] = content
+    parsed = _parse_json_safely(content)
+    questions = _coerce_questions(parsed)
+    if not isinstance(questions, list):
+        raise ValueError("Boss set response was not a list.")
+    if len(questions) < 20:
+        raise ValueError(f"Expected 20 boss questions, got {len(questions)}.")
+    cleaned: List[Dict] = []
+    for item in questions[:20]:
+        if not isinstance(item, dict) or "question" not in item or "answer" not in item:
+            continue
+        cleaned.append(
+            {
+                "question": str(item.get("question", "")).strip(),
+                "options": item.get("options") or None,
+                "answer": str(item.get("answer", "")).strip(),
+                "explanation": str(item.get("explanation", "")).strip(),
+            }
+        )
+    if len(cleaned) < 20:
+        raise ValueError("Boss set had insufficient valid questions.")
+    return cleaned
+
+
+def store_boss_set(unit: int, questions: List[Dict]) -> int:
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO boss_sets (unit, created_at) VALUES (?, ?)",
+            (unit, datetime.now().isoformat(timespec="seconds")),
+        )
+        boss_set_id = cur.lastrowid
+        for q in questions:
+            cur.execute(
+                """
+                INSERT INTO boss_questions (boss_set_id, question, options, answer, explanation)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    boss_set_id,
+                    q.get("question", ""),
+                    json.dumps(q.get("options")) if q.get("options") is not None else None,
+                    q.get("answer", ""),
+                    q.get("explanation", ""),
+                ),
+            )
+        conn.commit()
+        return boss_set_id
+    finally:
+        conn.close()
+
+
+def fetch_boss_set(unit: int, student: str) -> Tuple[int | None, List[Dict]]:
+    """Return next unused boss set for a student+unit, or (None, [])."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT bs.id
+            FROM boss_sets bs
+            WHERE bs.unit = ?
+              AND bs.id NOT IN (
+                  SELECT boss_set_id FROM boss_set_usage WHERE student = ?
+              )
+            ORDER BY bs.created_at ASC
+            LIMIT 1
+            """,
+            (unit, student),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None, []
+        boss_set_id = row[0]
+        cur.execute(
+            """
+            SELECT question, options, answer, explanation
+            FROM boss_questions
+            WHERE boss_set_id = ?
+            ORDER BY id ASC
+            """,
+            (boss_set_id,),
+        )
+        qrows = cur.fetchall()
+        questions: List[Dict] = []
+        for qr in qrows:
+            q_text, opts_json, ans, expl = qr
+            opts = None
+            if opts_json:
+                try:
+                    opts = json.loads(opts_json)
+                except Exception:
+                    opts = opts_json
+            questions.append(
+                {
+                    "question": q_text or "",
+                    "options": opts,
+                    "answer": ans or "",
+                    "explanation": expl or "",
+                }
+            )
+        return boss_set_id, questions
+    finally:
+        conn.close()
+
+
+def boss_set_counts(unit: int, student: str | None = None) -> Tuple[int, int | None]:
+    """Return (total sets for unit, unused sets for student if provided)."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM boss_sets WHERE unit = ?", (unit,))
+        total = cur.fetchone()[0] or 0
+        if student is None:
+            return total, None
+        cur.execute(
+            """
+            SELECT COUNT(*)
+            FROM boss_sets bs
+            WHERE bs.unit = ?
+              AND bs.id NOT IN (
+                  SELECT boss_set_id FROM boss_set_usage WHERE student = ?
+              )
+            """,
+            (unit, student),
+        )
+        unused = cur.fetchone()[0] or 0
+        return total, unused
+    finally:
+        conn.close()
+
+
 def _parse_json_safely(raw: str) -> Dict:
     """Attempt to parse JSON, retrying with trimmed braces if needed."""
     try:
@@ -466,6 +619,39 @@ def ensure_db() -> None:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS boss_sets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                unit INTEGER NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS boss_questions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                boss_set_id INTEGER NOT NULL,
+                question TEXT,
+                options TEXT,
+                answer TEXT,
+                explanation TEXT,
+                FOREIGN KEY (boss_set_id) REFERENCES boss_sets(id)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS boss_set_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                boss_set_id INTEGER NOT NULL,
+                student TEXT NOT NULL,
+                used_at TEXT NOT NULL,
+                FOREIGN KEY (boss_set_id) REFERENCES boss_sets(id)
+            )
+            """
+        )
         cols = {row[1] for row in cur.execute("PRAGMA table_info(quizzes)")}
         if "difficulty" not in cols:
             cur.execute("ALTER TABLE quizzes ADD COLUMN difficulty TEXT")
@@ -491,6 +677,7 @@ def save_quiz_result(
     start_time: str,
     end_time: str,
     qa_payload: List[Dict],
+    boss_set_id: int | None = None,
 ) -> None:
     ensure_db()
     conn = get_conn()
@@ -536,6 +723,14 @@ def save_quiz_result(
                     is_correct,
                     item.get("explanation", ""),
                 ),
+            )
+        if boss_set_id is not None:
+            cur.execute(
+                """
+                INSERT INTO boss_set_usage (boss_set_id, student, used_at)
+                VALUES (?, ?, ?)
+                """,
+                (boss_set_id, student, datetime.now().isoformat(timespec="seconds")),
             )
         conn.commit()
     finally:
@@ -774,6 +969,7 @@ def init_session_state() -> None:
     st.session_state.setdefault("quiz_locked", False)
     st.session_state.setdefault("show_progress", False)
     st.session_state.setdefault("math_mode", "none")  # none | quiz | progress
+    st.session_state.setdefault("boss_set_id", None)
 
 
 def reset_quiz_state(clear_questions: bool = True) -> None:
@@ -786,6 +982,7 @@ def reset_quiz_state(clear_questions: bool = True) -> None:
     st.session_state["answers_submitted"] = False
     st.session_state["quiz_locked"] = False
     st.session_state["last_quiz_error"] = ""
+    st.session_state["boss_set_id"] = None
 
 
 def escape_markdown(text: str) -> str:
@@ -999,6 +1196,38 @@ def main() -> None:
     )
     difficulty = difficulty_labels[difficulty_label]
 
+    # Admin: bulk-generate Boss Battle sets and store locally (requires API key)
+    with st.expander("Admin: Prebuild Boss Battle sets (cached)", expanded=False):
+        if not available_units:
+            st.info("No units detected yet. Add PDFs and refresh first.")
+        admin_unit = st.selectbox("Unit for Boss sets", options=available_units, key="admin_unit_select")
+        total_sets, unused_sets = boss_set_counts(admin_unit, student_name or None)
+        st.caption(f"Stored sets for Unit {admin_unit}: total={total_sets}, unused for {student_name or '—'}={unused_sets if unused_sets is not None else '—'}")
+        num_sets = st.number_input("Number of sets to generate", min_value=1, max_value=10, value=1, step=1)
+        if st.button("Generate Boss Sets", key="admin_generate_boss"):
+            if not api_key:
+                st.error("Set XAI_API_KEY to generate Boss Battle sets.")
+            else:
+                client = get_client(api_key)
+                generated = 0
+                errors: List[str] = []
+                with st.spinner("Generating Boss Battle sets..."):
+                    for _ in range(int(num_sets)):
+                        try:
+                            qs = generate_boss_set(client, admin_unit)
+                            store_boss_set(admin_unit, qs)
+                            generated += 1
+                        except Exception as exc:  # noqa: BLE001
+                            errors.append(str(exc))
+                            break
+                if generated:
+                    st.success(f"Generated and stored {generated} Boss Battle set(s) for Unit {admin_unit}.")
+                if errors:
+                    st.warning(f"Stopped due to error: {errors[0]}")
+                # Refresh counts after generation
+                total_sets, unused_sets = boss_set_counts(admin_unit, student_name or None)
+                st.caption(f"Updated counts for Unit {admin_unit}: total={total_sets}, unused for {student_name or '—'}={unused_sets if unused_sets is not None else '—'}")
+
     if st.button("Generate Quiz"):
         generation_error = None
         # Starting a new quiz unlocks submission and clears previous answers
@@ -1008,41 +1237,64 @@ def main() -> None:
             generation_error = "Please enter the student name before generating a quiz."
         if not selected_units:
             generation_error = generation_error or "Select at least one unit to generate a quiz."
-        if not api_key:
-            generation_error = generation_error or "Missing XAI_API_KEY. Set it and retry."
+        if difficulty == "complex" and not api_key:
+            generation_error = generation_error or "Missing XAI_API_KEY for Boss Battle generation."
 
         if generation_error:
             st.session_state["last_quiz_error"] = generation_error
             st.session_state["questions"] = []
         else:
-            aggregated = aggregate_keywords(selected_units, units_data)
-            allowed = unit_topics(selected_units)
-            filtered = filter_counter(aggregated, allowed) if aggregated else Counter()
-            topics = top_topics(filtered) if filtered else allowed
-            weighted_topics = topic_weights(filtered) if filtered else [
-                {"topic": t, "weight": 1} for t in allowed
-            ]
-            client = get_client(api_key)
+            client = get_client(api_key) if api_key else None
+            if difficulty == "complex":
+                if len(selected_units) != 1:
+                    generation_error = "For Boss Battle, select exactly one unit."
+                else:
+                    unit = selected_units[0]
+                    try:
+                        boss_set_id, questions = fetch_boss_set(unit, student_name)
+                        if not questions:
+                            if not client:
+                                raise ValueError("No cached Boss Battle sets. Provide XAI_API_KEY to generate one.")
+                            questions = generate_boss_set(client, unit)
+                            boss_set_id = store_boss_set(unit, questions)
+                        st.session_state["boss_set_id"] = boss_set_id
+                        st.session_state["questions"] = questions
+                        st.session_state["answers_submitted"] = False
+                        st.session_state["last_quiz_error"] = ""
+                        st.success("Boss Battle ready!")
+                    except Exception as exc:
+                        generation_error = f"Boss Battle generation failed: {exc}"
+                        st.session_state["last_quiz_error"] = generation_error
+                        st.session_state["questions"] = []
+            else:
+                aggregated = aggregate_keywords(selected_units, units_data)
+                allowed = unit_topics(selected_units)
+                filtered = filter_counter(aggregated, allowed) if aggregated else Counter()
+                topics = top_topics(filtered) if filtered else allowed
+                weighted_topics = topic_weights(filtered) if filtered else [
+                    {"topic": t, "weight": 1} for t in allowed
+                ]
+                client = get_client(api_key) if api_key else None
 
-            with st.spinner("Generating quiz with Grok..."):
-                try:
-                    questions = generate_questions(
-                        client=client,
-                        selected_units=selected_units,
-                        topics=topics,
-                        weighted_topics=weighted_topics,
-                        allowed_topics=allowed,
-                        difficulty=difficulty,
-                    )
-                except Exception as exc:
-                    generation_error = f"Quiz generation failed: {exc}"
-                    st.session_state["last_quiz_error"] = generation_error
-                    st.session_state["questions"] = []
-            if not generation_error:
-                st.session_state["questions"] = questions
-                st.session_state["answers_submitted"] = False
-                st.session_state["last_quiz_error"] = ""
-                st.success("Quiz ready!")
+                with st.spinner("Generating quiz with Grok..."):
+                    try:
+                        questions = generate_questions(
+                            client=client,
+                            selected_units=selected_units,
+                            topics=topics,
+                            weighted_topics=weighted_topics,
+                            allowed_topics=allowed,
+                            difficulty=difficulty,
+                        )
+                    except Exception as exc:
+                        generation_error = f"Quiz generation failed: {exc}"
+                        st.session_state["last_quiz_error"] = generation_error
+                        st.session_state["questions"] = []
+                if not generation_error:
+                    st.session_state["questions"] = questions
+                    st.session_state["answers_submitted"] = False
+                    st.session_state["last_quiz_error"] = ""
+                    st.success("Quiz ready!")
 
     if st.session_state.get("last_quiz_error"):
         st.error(st.session_state["last_quiz_error"])
@@ -1151,6 +1403,7 @@ def main() -> None:
                 start_ts,
                 end_ts,
                 qa_payload,
+                st.session_state.get("boss_set_id"),
             )
             # Email results if SMTP is configured
             email_ok, email_msg = send_results_email(
