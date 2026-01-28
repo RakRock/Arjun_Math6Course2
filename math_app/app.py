@@ -1196,38 +1196,6 @@ def main() -> None:
     )
     difficulty = difficulty_labels[difficulty_label]
 
-    # Admin: bulk-generate Boss Battle sets and store locally (requires API key)
-    with st.expander("Admin: Prebuild Boss Battle sets (cached)", expanded=False):
-        if not available_units:
-            st.info("No units detected yet. Add PDFs and refresh first.")
-        admin_unit = st.selectbox("Unit for Boss sets", options=available_units, key="admin_unit_select")
-        total_sets, unused_sets = boss_set_counts(admin_unit, student_name or None)
-        st.caption(f"Stored sets for Unit {admin_unit}: total={total_sets}, unused for {student_name or '—'}={unused_sets if unused_sets is not None else '—'}")
-        num_sets = st.number_input("Number of sets to generate", min_value=1, max_value=10, value=1, step=1)
-        if st.button("Generate Boss Sets", key="admin_generate_boss"):
-            if not api_key:
-                st.error("Set XAI_API_KEY to generate Boss Battle sets.")
-            else:
-                client = get_client(api_key)
-                generated = 0
-                errors: List[str] = []
-                with st.spinner("Generating Boss Battle sets..."):
-                    for _ in range(int(num_sets)):
-                        try:
-                            qs = generate_boss_set(client, admin_unit)
-                            store_boss_set(admin_unit, qs)
-                            generated += 1
-                        except Exception as exc:  # noqa: BLE001
-                            errors.append(str(exc))
-                            break
-                if generated:
-                    st.success(f"Generated and stored {generated} Boss Battle set(s) for Unit {admin_unit}.")
-                if errors:
-                    st.warning(f"Stopped due to error: {errors[0]}")
-                # Refresh counts after generation
-                total_sets, unused_sets = boss_set_counts(admin_unit, student_name or None)
-                st.caption(f"Updated counts for Unit {admin_unit}: total={total_sets}, unused for {student_name or '—'}={unused_sets if unused_sets is not None else '—'}")
-
     if st.button("Generate Quiz"):
         generation_error = None
         # Starting a new quiz unlocks submission and clears previous answers
@@ -1251,13 +1219,10 @@ def main() -> None:
                 else:
                     unit = selected_units[0]
                     try:
-                        boss_set_id, questions = fetch_boss_set(unit, student_name)
-                        if not questions:
-                            if not client:
-                                raise ValueError("No cached Boss Battle sets. Provide XAI_API_KEY to generate one.")
-                            questions = generate_boss_set(client, unit)
-                            boss_set_id = store_boss_set(unit, questions)
-                        st.session_state["boss_set_id"] = boss_set_id
+                        if not client:
+                            raise ValueError("Missing XAI_API_KEY for Boss Battle generation.")
+                        questions = generate_boss_set(client, unit)
+                        st.session_state["boss_set_id"] = None
                         st.session_state["questions"] = questions
                         st.session_state["answers_submitted"] = False
                         st.session_state["last_quiz_error"] = ""
