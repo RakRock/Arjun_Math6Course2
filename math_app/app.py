@@ -29,6 +29,7 @@ except PermissionError:
     DB_DIR = BASE_DIR / ".data"
     DB_DIR.mkdir(parents=True, exist_ok=True)
 UNITS_DATA_PATH = BASE_DIR / "units_data.json"
+UNITS_CONCEPTS_AI_PATH = BASE_DIR / "units_concepts_ai.json"
 PROGRESS_DB_PATH = DB_DIR / "progress.db"
 MODEL_NAME = "grok-4-fast"
 API_BASE_URL = "https://api.x.ai/v1"
@@ -149,6 +150,122 @@ def process_pdfs_in_folder() -> Dict[str, Dict[str, int]]:
         updated[pdf_path.name] = counts
     save_units_data(updated)
     return updated
+
+
+# ============ AI-Powered Concept Extraction ============
+
+def load_ai_concepts() -> Dict[str, Dict[str, int]]:
+    """Load AI-generated concepts from JSON file."""
+    if UNITS_CONCEPTS_AI_PATH.exists():
+        try:
+            with UNITS_CONCEPTS_AI_PATH.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def save_ai_concepts(data: Dict[str, Dict[str, int]]) -> None:
+    """Save AI-generated concepts to JSON file."""
+    try:
+        with UNITS_CONCEPTS_AI_PATH.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except OSError:
+        pass
+
+
+def extract_text_from_pdf(path: Path) -> str:
+    """Extract full text from a PDF file."""
+    full_text_parts: List[str] = []
+    with pdfplumber.open(str(path)) as pdf:
+        for page in pdf.pages:
+            page_text = page.extract_text() or ""
+            full_text_parts.append(page_text)
+    return "\n".join(full_text_parts)
+
+
+def extract_concepts_with_llm(client, unit_name: str, unit_text: str) -> Dict[str, int]:
+    """Use LLM to extract meaningful math concepts from unit text."""
+    # Truncate text if too long (keep first ~4000 chars for context)
+    truncated_text = unit_text[:4000] if len(unit_text) > 4000 else unit_text
+    
+    prompt = f"""Analyze this 6th-grade math unit and identify the KEY MATHEMATICAL CONCEPTS being taught.
+
+Unit: {unit_name}
+Content excerpt:
+{truncated_text}
+
+Return a JSON object where:
+- Keys are specific math concepts/topics (e.g., "solving two-step equations", "unit rates", "area of composite figures")
+- Values are importance scores from 1-100 (higher = more central to the unit)
+
+Focus on:
+- What mathematical skills are being taught
+- What formulas or methods are covered  
+- What types of problems students will solve
+- Key vocabulary and definitions
+
+Return ONLY valid JSON, nothing else. Example format:
+{{"solving two-step equations": 95, "combining like terms": 85, "distributive property": 80, "variables on both sides": 75}}"""
+
+    try:
+        response = client.chat.completions.create(
+            model=MODEL_NAME,
+            max_tokens=600,
+            temperature=0.3,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": "You are a math curriculum analyzer. Extract key concepts from unit content."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        content = response.choices[0].message.content.strip()
+        parsed = json.loads(content)
+        
+        # Ensure all values are integers
+        if isinstance(parsed, dict):
+            return {str(k): int(v) for k, v in parsed.items() if isinstance(v, (int, float))}
+        return {}
+    except Exception as exc:
+        st.warning(f"LLM concept extraction failed for {unit_name}: {exc}")
+        return {}
+
+
+def process_pdfs_with_llm(client, progress_callback=None) -> Dict[str, Dict[str, int]]:
+    """Process all PDFs in folder using LLM to extract concepts."""
+    ensure_pdf_folder()
+    pdf_files = sorted(PDF_FOLDER.glob("*.pdf"))
+    concepts = {}
+    total = len(pdf_files)
+    
+    for idx, pdf_path in enumerate(pdf_files):
+        unit_name = pdf_path.stem
+        if progress_callback:
+            progress_callback(idx + 1, total, unit_name)
+        
+        unit_text = extract_text_from_pdf(pdf_path)
+        concepts[unit_name] = extract_concepts_with_llm(client, unit_name, unit_text)
+    
+    save_ai_concepts(concepts)
+    return concepts
+
+
+def get_ai_topics_for_units(selected_units: List[int], ai_concepts: Dict[str, Dict[str, int]]) -> List[Dict[str, int]]:
+    """Get AI-generated topics for selected units."""
+    aggregated: Counter = Counter()
+    
+    for unit_name, concepts in ai_concepts.items():
+        # Check if this unit matches any selected unit number
+        match = re.search(r"unit\s*(\d+)", unit_name, re.IGNORECASE)
+        if match and int(match.group(1)) in selected_units:
+            for concept, weight in concepts.items():
+                aggregated[concept] = max(aggregated[concept], weight)
+    
+    if not aggregated:
+        return []
+    
+    # Return top 10 concepts as list of dicts
+    return [{"topic": topic, "weight": weight} for topic, weight in aggregated.most_common(10)]
 
 
 def list_available_units(units_data: Dict[str, Dict[str, int]]) -> List[int]:
@@ -1171,10 +1288,40 @@ def main() -> None:
         f"Copy Springboard Course 2 PDFs into the folder: {PDF_FOLDER} "
         "and click Refresh to load/update keyword data."
     )
-    if st.button("Refresh PDFs from folder"):
-        with st.spinner("Processing PDFs for keywords..."):
-            units_data = process_pdfs_in_folder()
-        st.success("PDF folder processed and keyword data updated.")
+    
+    # Load AI concepts if available
+    if "ai_concepts" not in st.session_state:
+        st.session_state["ai_concepts"] = load_ai_concepts()
+    ai_concepts = st.session_state["ai_concepts"]
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Refresh PDFs from folder"):
+            with st.spinner("Processing PDFs for keywords..."):
+                units_data = process_pdfs_in_folder()
+            st.success("PDF folder processed and keyword data updated.")
+    
+    with col2:
+        if st.button("🤖 Generate Concepts (AI)"):
+            if not api_key:
+                st.error("API key required for AI concept extraction.")
+            else:
+                client = get_client(api_key)
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                
+                def update_progress(current, total, name):
+                    progress_bar.progress(current / total)
+                    status_text.text(f"Analyzing {current}/{total}: {name}")
+                
+                with st.spinner("Extracting concepts with AI..."):
+                    new_concepts = process_pdfs_with_llm(client, progress_callback=update_progress)
+                    st.session_state["ai_concepts"] = new_concepts
+                
+                progress_bar.empty()
+                status_text.empty()
+                st.success("AI concepts generated and saved!")
+                st.rerun()
 
     available_units = list_available_units(units_data)
     selected_units = st.multiselect(
@@ -1183,6 +1330,18 @@ def main() -> None:
         default=st.session_state.get("selected_units", []),
     )
     st.session_state["selected_units"] = selected_units
+
+    # Show AI concepts for selected units if available
+    if selected_units and ai_concepts:
+        ai_topics_display = get_ai_topics_for_units(selected_units, ai_concepts)
+        if ai_topics_display:
+            with st.expander("📚 AI-Extracted Concepts (click to expand)", expanded=False):
+                for item in ai_topics_display:
+                    st.markdown(f"- **{item['topic']}** ({item['weight']})")
+        else:
+            st.caption("No AI concepts found for selected units. Click '🤖 Generate Concepts (AI)' to analyze PDFs.")
+    elif selected_units and not ai_concepts:
+        st.caption("💡 Tip: Click '🤖 Generate Concepts (AI)' for smarter topic extraction.")
 
     difficulty_labels = {
         "Rookie Quest": "easy",
@@ -1232,13 +1391,24 @@ def main() -> None:
                         st.session_state["last_quiz_error"] = generation_error
                         st.session_state["questions"] = []
             else:
-                aggregated = aggregate_keywords(selected_units, units_data)
-                allowed = unit_topics(selected_units)
-                filtered = filter_counter(aggregated, allowed) if aggregated else Counter()
-                topics = top_topics(filtered) if filtered else allowed
-                weighted_topics = topic_weights(filtered) if filtered else [
-                    {"topic": t, "weight": 1} for t in allowed
-                ]
+                # Prefer AI-generated concepts if available
+                ai_topics = get_ai_topics_for_units(selected_units, ai_concepts) if ai_concepts else []
+                
+                if ai_topics:
+                    # Use AI-extracted concepts
+                    topics = [f"{t['topic']} (emphasis: {t['weight']})" for t in ai_topics]
+                    weighted_topics = ai_topics
+                    allowed = [t["topic"] for t in ai_topics]
+                else:
+                    # Fallback to keyword counting
+                    aggregated = aggregate_keywords(selected_units, units_data)
+                    allowed = unit_topics(selected_units)
+                    filtered = filter_counter(aggregated, allowed) if aggregated else Counter()
+                    topics = top_topics(filtered) if filtered else allowed
+                    weighted_topics = topic_weights(filtered) if filtered else [
+                        {"topic": t, "weight": 1} for t in allowed
+                    ]
+                
                 client = get_client(api_key) if api_key else None
 
                 with st.spinner("Generating quiz with Grok..."):

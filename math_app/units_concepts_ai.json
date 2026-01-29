@@ -1,0 +1,63 @@
+{
+  "Course 2 Unit 1 SE": {
+    "rational numbers": 100,
+    "terminating and repeating decimals": 90,
+    "adding and subtracting decimals": 95,
+    "adding and subtracting fractions": 85,
+    "absolute value": 90,
+    "integers and operations": 95,
+    "multiplying and dividing integers": 90,
+    "properties of operations (commutative, associative, distributive)": 80,
+    "ordering and comparing rational numbers": 75,
+    "using number lines and models for integers": 70,
+    "solving real-world problems with rational numbers": 85,
+    "subsets of number systems": 60
+  },
+  "Course 2 Unit 2 SE": {
+    "writing algebraic expressions": 95,
+    "simplifying linear expressions": 92,
+    "properties of operations": 90,
+    "solving one-step equations": 85,
+    "solving two-step equations": 95,
+    "creating equations from tables graphs and word problems": 92,
+    "solving linear inequalities": 90,
+    "graphing inequalities on number lines": 85,
+    "interpreting graphs of linear relationships": 88,
+    "order of operations": 70,
+    "real-world applications of equations and inequalities": 88
+  },
+  "Course 2 Unit 3 SE": {
+    "ratios": 100,
+    "unit rates": 95,
+    "rates": 90,
+    "proportions": 100,
+    "cross products": 90,
+    "constant of proportionality": 85,
+    "scale drawings": 90,
+    "percents": 100,
+    "percent equations": 90,
+    "discounts": 85,
+    "markups": 85,
+    "simple interest": 80,
+    "percent error": 75,
+    "proportional relationships": 95,
+    "rate of change": 85,
+    "representations of ratios and proportions (tables, graphs)": 90,
+    "solving two-step equations": 70,
+    "algebraic expressions for rates": 60
+  },
+  "Course 2 Unit 4 SE": {
+    "Angle Relationships (Complementary, Supplementary, Adjacent, Vertical Angles)": 95,
+    "Classifying Triangles by Sides and Angles": 85,
+    "Properties of Polygons": 80,
+    "Area Formulas for Triangles, Rectangles, Parallelograms, Trapezoids": 90,
+    "Circumference and Area of Circles": 90,
+    "Surface Area of Prisms and Pyramids": 95,
+    "Volume of Prisms and Pyramids": 95,
+    "Composite Figures (Area and Volume)": 90,
+    "Nets of Three-Dimensional Figures": 85,
+    "Cross Sections of Solids": 80,
+    "Solving Equations for Unknown Angles": 85,
+    "Relating Two-Dimensional Drawings to Three-Dimensional Figures": 90
+  }
+}
