@@ -5,6 +5,8 @@ from math_app import app as math_app
 from vocab_app import vocab_app
 from quiz_app import quiz_app
 from math_unit_app import math_unit
+from wordle_app import wordle_app
+from sequence_app import sequence_app
 
 
 def _run_without_page_config(fn):
@@ -37,8 +39,8 @@ def main():
     except Exception:
         pass
 
-    math_tab, vocab_tab, quiz_tab, unit_tab = st.tabs(
-        ["Math", "Vocab Builder", "Quiz", "Math Unit"]
+    math_tab, vocab_tab, quiz_tab, unit_tab, wordle_tab, sequence_tab = st.tabs(
+        ["Math", "Vocab Builder", "Quiz", "Math Unit", "Wordle", "Sequences"]
     )
 
     with math_tab:
@@ -52,6 +54,12 @@ def main():
 
     with unit_tab:
         _run_without_page_config(math_unit.main)
+
+    with wordle_tab:
+        _run_without_page_config(wordle_app.main)
+
+    with sequence_tab:
+        _run_without_page_config(sequence_app.main)
 
 
 if __name__ == "__main__":

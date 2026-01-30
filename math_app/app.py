@@ -81,6 +81,88 @@ UNIT_SKILL_MAP = {
     7: ["statistics", "data displays"],
 }
 
+# Detailed question type templates for each unit to guide high-quality generation
+UNIT_QUESTION_TEMPLATES = {
+    1: """Unit 1 - Integers & Expressions:
+- Adding/subtracting integers with real-life context (temperature changes, elevation, bank balance)
+- Multiplying/dividing integers
+- Order of operations (PEMDAS) problems
+- Evaluating expressions with given variable values
+- Writing expressions from word problems
+- Absolute value problems
+- Comparing and ordering integers on number line""",
+    
+    2: """Unit 2 - Equations & Inequalities:
+- One-step equations (x + 5 = 12, 3x = 24)
+- Two-step equations (2x + 3 = 15)
+- Writing equations from word problems
+- Solving inequalities and graphing solutions
+- Real-world equation problems (age, money, distance)
+- Variables on both sides
+- Checking solutions""",
+    
+    3: """Unit 3 - Ratios & Percents:
+- "X is what percent of Y?" (e.g., 9 is 15% of what number?)
+- "Find X% of Y" (e.g., Find 40% of 150)
+- Discount problems (e.g., 30% off original price $13)
+- Sales tax problems (e.g., 9.5% tax on $50 purchase)
+- Percent increase/decrease (e.g., price went from $0.25 to $2.50)
+- Tip calculations (15%, 18%, 20% tip on restaurant bill)
+- Markup/markdown problems
+- Converting between fractions, decimals, and percents
+- Commission problems
+- Simple interest problems""",
+    
+    4: """Unit 4 - Proportions & Unit Rates:
+- Unit rate problems (miles per hour, cost per item)
+- Setting up and solving proportions
+- Scale drawings and maps
+- Similar figures
+- Recipe scaling (double/triple a recipe)
+- Speed/distance/time problems
+- Better buy comparisons
+- Conversion problems using unit rates""",
+    
+    5: """Unit 5 - Geometry (Area & Perimeter):
+- Area of rectangles, triangles, parallelograms
+- Area of composite figures
+- Perimeter problems
+- Area of circles (πr²)
+- Circumference (2πr or πd)
+- Real-world area problems (flooring, painting walls)
+- Missing side length given area
+- Comparing areas of different shapes""",
+    
+    6: """Unit 6 - Volume & Surface Area:
+- Volume of rectangular prisms (V = lwh)
+- Volume of triangular prisms
+- Surface area of rectangular prisms
+- Surface area of triangular prisms
+- Real-world volume problems (filling containers, shipping boxes)
+- Comparing volumes
+- Finding missing dimensions given volume
+- Nets of 3D figures""",
+    
+    7: """Unit 7 - Statistics & Data:
+- Mean, median, mode, range calculations
+- Interpreting bar graphs and histograms
+- Creating and reading box plots
+- Measures of center and spread
+- Comparing data sets
+- Making predictions from data
+- Outliers and their effects
+- Reading and creating frequency tables""",
+}
+
+
+def get_unit_question_guidance(units: List[int]) -> str:
+    """Get detailed question guidance for selected units."""
+    guidance_parts = []
+    for unit in units:
+        if unit in UNIT_QUESTION_TEMPLATES:
+            guidance_parts.append(UNIT_QUESTION_TEMPLATES[unit])
+    return "\n\n".join(guidance_parts)
+
 
 def load_units_data() -> Dict[str, Dict[str, int]]:
     if not UNITS_DATA_PATH.exists():
@@ -330,20 +412,31 @@ def generate_questions(
     allowed_topics: List[str],
     difficulty: str,
 ) -> List[Dict]:
-    prompt = (
-        "Generate 20 questions for 6th-grade Springboard Course 2 math."
-        f" Units: {selected_units}. Focus on: {topics}."
-        f" Difficulty: {difficulty}. Mix multiple-choice and short-answer."
-        " Output JSON ONLY as an object:"
-        ' {"questions": [{"question": str, "options": list or null, "answer": str,'
-        ' "explanation": str}, ...exactly 20 items...]}'
-        " Keep questions kid-friendly with real-life hooks."
-        " Do not include any text before or after the JSON. No trailing commas."
-        " Output exactly 20 questions—no more, no less."
-        f" Use this weighted emphasis (allocate questions roughly proportionally): {json.dumps(weighted_topics)}."
-        " Ensure top 3 weighted topics each get at least 2 questions; remaining topics at least 1."
-        f" Use ONLY these allowed topics and content appropriate to the selected units—avoid topics from other units: {allowed_topics}."
-    )
+    # Get detailed question type guidance for selected units
+    unit_guidance = get_unit_question_guidance(selected_units)
+    
+    prompt = f"""Generate 20 questions for 6th-grade Springboard Course 2 math.
+Units: {selected_units}
+Difficulty: {difficulty}
+
+IMPORTANT - Use these specific question types for the selected units:
+{unit_guidance}
+
+Requirements:
+- Create word problems with real-life scenarios (shopping, cooking, sports, travel, etc.)
+- Mix multiple-choice (4 options labeled A, B, C, D) and short-answer questions
+- Include the correct answer and a brief explanation for each
+- Make questions progressively challenging
+- Use realistic numbers and contexts appropriate for 6th graders
+- For percent problems: include discounts, tax, tips, percent increase/decrease
+- For equations: include real-world contexts like age problems, money problems
+
+Output JSON ONLY as: {{"questions": [{{"question": str, "options": list or null, "answer": str, "explanation": str}}, ...exactly 20 items...]}}
+
+Topic weights (allocate questions proportionally): {json.dumps(weighted_topics)}
+Allowed topics only: {allowed_topics}
+
+Output exactly 20 questions. No extra text before or after JSON."""
     response = client.chat.completions.create(
         model=MODEL_NAME,
         max_tokens=2000,
@@ -408,13 +501,28 @@ def generate_questions(
 
 
 def generate_boss_set(client: OpenAI, unit: int) -> List[Dict]:
-    prompt = (
-        "Generate 20 challenging 'Boss Battle' questions for 6th-grade Springboard Course 2 math."
-        f" Unit: {unit}. Difficulty: complex. Each question must include the correct answer and explanation."
-        " Format: JSON ONLY as an object: {\"questions\": [{\"question\": str, \"options\": list or null, \"answer\": str, \"explanation\": str}, ...exactly 20 items...]}"
-        " Mix multiple-choice and short-answer. Use kid-friendly but rigorous wording. No extra text."
-        " No trailing commas. Exactly 20 items."
-    )
+    # Get detailed question type guidance for the unit
+    unit_guidance = get_unit_question_guidance([unit])
+    
+    prompt = f"""Generate 20 challenging 'Boss Battle' questions for 6th-grade Springboard Course 2 math.
+Unit: {unit}
+Difficulty: COMPLEX (challenging but fair for 6th graders)
+
+IMPORTANT - Use these specific question types:
+{unit_guidance}
+
+Requirements:
+- Create challenging multi-step word problems with real-life scenarios
+- Each problem should require careful thinking and multiple steps to solve
+- Mix multiple-choice (4 options: A, B, C, D) and short-answer questions
+- Include the correct answer and a detailed explanation
+- Use realistic numbers and contexts (shopping, cooking, sports, travel, construction)
+- Make problems progressively more challenging
+- Include some problems that combine multiple concepts from the unit
+
+Format: JSON ONLY as: {{"questions": [{{"question": str, "options": list or null, "answer": str, "explanation": str}}, ...exactly 20 items...]}}
+
+No extra text. Exactly 20 challenging questions."""
     response = client.chat.completions.create(
         model=MODEL_NAME,
         max_tokens=2400,
